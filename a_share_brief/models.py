@@ -126,7 +126,7 @@ class Brief:
     @property
     def title(self) -> str:
         if self.kind == "morning":
-            return "次日早盘前瞻" if self.preview else "早盘要闻"
+            return "早盘"
         return "收盘综述"
 
     def index(self, name: str) -> Quote | None:

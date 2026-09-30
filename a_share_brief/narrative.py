@@ -105,28 +105,26 @@ def build_narrative(brief: Brief) -> Narrative:
 
 def _watch(brief: Brief, style: str) -> list[str]:
     items: list[str] = []
-    kc = brief.index("科创50")
-    if kc and kc.pct is not None and kc.pct <= -1:
-        items.append(f"科创50收于{fmt_pct(kc.pct)}，开盘先看成长方向有没有承接。")
-    elif style == "成长占优" and kc and kc.pct is not None:
-        items.append(f"科创50收于{fmt_pct(kc.pct)}，留意强势是否延续到开盘。")
-    if brief.sector_out:
-        worst = brief.sector_out[0]
-        items.append(f"{worst.name}主力{fmt_yi(worst.net, signed=True)}，观察流出是否放缓。")
-    if brief.sector_in:
-        best = brief.sector_in[0]
-        items.append(f"{best.name}主力{fmt_yi(best.net, signed=True)}，看强势板块能否继续吸引资金。")
-    titles = " ".join(item.title for item in brief.news)
-    if any(word in titles for word in ("PCE", "ADP", "美联储", "GDP")):
-        items.append("美国就业、通胀或增长数据仍在影响风险偏好，开盘前先看外盘期货。")
-    if brief.cross and brief.cross.south_net is not None and brief.cross.south_net > 0:
-        items.append(f"南向净买入{fmt_yi(brief.cross.south_net, unit='亿港元')}，港股风险偏好偏积极。")
-    if len(items) < 3 and brief.breadth:
-        items.append(
-            f"涨停{brief.breadth.limit_up}家、跌停{brief.breadth.limit_down}家，短线情绪看涨停家数会不会明显回落。"
-        )
-    deduped: list[str] = []
-    for item in items:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped[:3]
+    if brief.sectors_up:
+        top = brief.sectors_up[0]
+        leader = f"，领涨{top.leader}" if top.leader else ""
+        items.append(f"{top.name}昨日{fmt_pct(top.pct)}{leader}。")
+    if brief.sectors_down:
+        worst = brief.sectors_down[0]
+        leader = f"，领跌{worst.leader}" if worst.leader else ""
+        items.append(f"{worst.name}昨日{fmt_pct(worst.pct)}{leader}。")
+    for flow in brief.sector_in:
+        if any(flow.name in text for text in items):
+            continue
+        items.append(f"{flow.name}昨日主力净流入{fmt_yi(flow.net, signed=True)}。")
+        if len(items) >= 3:
+            break
+    if len(items) < 3 and brief.sector_out:
+        for flow in brief.sector_out:
+            if any(flow.name in text for text in items):
+                continue
+            items.append(f"{flow.name}昨日主力净流出{fmt_yi(flow.net, signed=True)}。")
+            break
+    if not items and style:
+        items.append("昨日板块分化，开盘先看强势板块能否延续、弱势板块有没有承接。")
+    return items[:3]

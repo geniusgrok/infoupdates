@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from .models import NewsItem
 
@@ -57,8 +57,10 @@ def score_news(item: NewsItem, *, kind: str, trade_date: date) -> float:
         score += 6
     elif item.published.date() < trade_date - timedelta(days=1):
         score -= 20
-    if kind == "morning" and any(word in title for word in ("央行", "美联储", "PCE", "ADP", "统计局", "GDP")):
+    if kind == "morning" and any(word in title for word in ("央行", "美联储", "PCE", "ADP", "统计局", "GDP", "美股", "日本", "韩国", "日经")):
         score += 8
+    if kind == "morning" and any(word in title for word in ("收评", "午评")):
+        score -= 40
     return score
 
 
@@ -84,10 +86,15 @@ def select_news(
     now: datetime,
     limit: int = 7,
 ) -> list[NewsItem]:
-    fresh_after = now - timedelta(hours=36)
+    if kind == "morning":
+        fresh_after = datetime.combine(trade_date, time(15, 0), tzinfo=now.tzinfo)
+    else:
+        fresh_after = now - timedelta(hours=36)
     pool: list[NewsItem] = []
     for item in items:
         if item.published < fresh_after:
+            continue
+        if kind == "morning" and any(word in item.title for word in ("收评", "午评")):
             continue
         if len(item.title) < 8:
             continue

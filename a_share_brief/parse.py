@@ -166,7 +166,7 @@ def parse_hk_index(symbol: str, body: str, name: str) -> Quote | None:
     )
 
 
-def parse_nikkei(symbol: str, body: str) -> Quote | None:
+def parse_nikkei(symbol: str, body: str, name: str = "日经225") -> Quote | None:
     if not body:
         return None
     parts = body.split(",")
@@ -183,7 +183,7 @@ def parse_nikkei(symbol: str, body: str) -> Quote | None:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
             session = part[5:]
             break
-    return Quote(symbol=symbol, name="日经225", last=last, pct=pct, change=change, session=session)
+    return Quote(symbol=symbol, name=name, last=last, pct=pct, change=change, session=session)
 
 
 def parse_fx(symbol: str, body: str, name: str) -> Quote | None:
@@ -351,7 +351,7 @@ INDEX_ORDER = (
     "中证1000",
     "科创50",
 )
-OVERSEAS_ORDER = ("道琼斯", "纳斯达克", "标普500", "恒生指数", "恒生科技", "日经225")
+OVERSEAS_ORDER = ("道琼斯", "纳斯达克", "标普500", "日经225", "韩国KOSPI", "韩国KOSDAQ", "恒生指数", "恒生科技")
 
 
 def parse_qq_bundle(text: str) -> dict[str, str]:

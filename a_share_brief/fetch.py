@@ -143,7 +143,7 @@ def _indices_qq() -> list[Quote]:
 
 
 def _overseas_sina() -> tuple[list[Quote], list[Quote], list[Quote]]:
-    symbols = "gb_dji,gb_ixic,gb_inx,rt_hkHSI,rt_hkHSTECH,b_NKY,fx_susdcny,fx_susdcnh,hf_ES,hf_NQ"
+    symbols = "gb_dji,gb_ixic,gb_inx,rt_hkHSI,rt_hkHSTECH,b_NKY,b_KOSPI,b_KOSDAQ,fx_susdcny,fx_susdcnh,hf_ES,hf_NQ"
     bundle = _sina(symbols)
     overseas = [
         item
@@ -154,6 +154,8 @@ def _overseas_sina() -> tuple[list[Quote], list[Quote], list[Quote]]:
             parse_hk_index("rt_hkHSI", bundle.get("rt_hkHSI", ""), "恒生指数"),
             parse_hk_index("rt_hkHSTECH", bundle.get("rt_hkHSTECH", ""), "恒生科技"),
             parse_nikkei("b_NKY", bundle.get("b_NKY", "")),
+            parse_nikkei("b_KOSPI", bundle.get("b_KOSPI", ""), "韩国KOSPI"),
+            parse_nikkei("b_KOSDAQ", bundle.get("b_KOSDAQ", ""), "韩国KOSDAQ"),
         )
         if item
     ]

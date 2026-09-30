@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, time, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -26,7 +27,7 @@ FLAT_BG = (36, 40, 46)
 ROOT = Path(__file__).resolve().parents[1]
 FONT_DIR = ROOT / "assets" / "fonts"
 TAPE_ORDER = ("上证指数", "深证成指", "创业板指", "沪深300", "上证50", "中证500", "中证1000", "科创50")
-KEY_NAMES = ("上证指数", "深证成指", "创业板指", "科创50")
+MORNING_ABROAD = ("道琼斯", "纳斯达克", "标普500", "日经225", "韩国KOSPI", "韩国KOSDAQ")
 
 
 def _font_file(weight: str) -> Path:
@@ -133,30 +134,36 @@ def _style_color(style: str) -> tuple[int, int, int]:
     return AMBER
 
 
+def _edition_date(brief: Brief) -> date:
+    if brief.kind != "morning":
+        return brief.trade_date
+    now = brief.generated_at
+    if now.time() < time(12, 0):
+        return now.date()
+    day = brief.trade_date + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
 def _masthead(canvas: Canvas, brief: Brief) -> None:
     canvas.draw.rectangle((0, 0, canvas.s(canvas.w), canvas.s(4)), fill=AMBER)
     canvas.y = 28
     canvas.text(canvas.pad, canvas.y, "INFOUPDATES", canvas.font("medium", 13), AMBER)
+    shown = _edition_date(brief)
     title = f"A股{brief.title}"
     title_font = canvas.font("bold", 40)
     canvas.y += 28
     canvas.text(canvas.pad, canvas.y, title, title_font, TEXT)
-    if brief.kind == "close":
-        date_label = f"{brief.trade_date.month}月{brief.trade_date.day}日  {weekday_cn(brief.trade_date)}"
-        date_font = canvas.font("bold", 28)
-        title_w = title_font.getlength(title) / canvas.scale
-        canvas.text(canvas.pad + title_w + 20, canvas.y + 10, date_label, date_font, AMBER)
-    else:
-        right = canvas.w - canvas.pad
-        canvas.text_right(right, canvas.y - 22, f"{brief.trade_date:%Y.%m.%d}", canvas.font("medium", 16), TEXT)
-        canvas.text_right(right, canvas.y, weekday_cn(brief.trade_date), canvas.font("regular", 13), MUTED)
+    date_label = f"{shown.month}月{shown.day}日  {weekday_cn(shown)}"
+    date_font = canvas.font("bold", 28)
+    title_w = title_font.getlength(title) / canvas.scale
+    canvas.text(canvas.pad + title_w + 20, canvas.y + 10, date_label, date_font, AMBER)
     canvas.y += 52
     if brief.kind == "close":
         subtitle = "股指  ·  板块  ·  资金  ·  情绪  ·  方向"
-    elif brief.preview:
-        subtitle = f"参照 {brief.trade_date:%m月%d日} 收盘、外盘与已知要闻"
     else:
-        subtitle = "开盘前要闻  ·  外盘  ·  今日线索"
+        subtitle = f"昨日 {brief.trade_date.month}月{brief.trade_date.day}日收盘  ·  隔夜美日韩  ·  今日关注"
     canvas.text(canvas.pad, canvas.y, subtitle, canvas.font("regular", 14), MUTED)
     canvas.y += 28
     canvas.rule(AMBER)
@@ -172,7 +179,8 @@ def _direction(canvas: Canvas, brief: Brief) -> None:
     y = canvas.y
     canvas.round(x, y, _content_width(), height, CARD, radius=16, outline=LINE)
     canvas.draw.rectangle((canvas.s(x), canvas.s(y + 16), canvas.s(x + 4), canvas.s(y + height - 16)), fill=AMBER)
-    canvas.text(x + 22, y + 16, "市场方向", canvas.font("regular", 13), AMBER)
+    label = "昨日情绪" if brief.kind == "morning" else "市场方向"
+    canvas.text(x + 22, y + 16, label, canvas.font("regular", 13), AMBER)
     style_color = _style_color(brief.narrative.style)
     canvas.text(x + 22, y + 36, brief.narrative.style, canvas.font("bold", 28), style_color)
     sentiment = brief.narrative.sentiment
@@ -188,13 +196,16 @@ def _direction(canvas: Canvas, brief: Brief) -> None:
     canvas.y += height + 18
 
 
-def _tape(canvas: Canvas, brief: Brief) -> None:
+def _tape(canvas: Canvas, brief: Brief, heading: str = "") -> None:
     by_name = {quote.name: quote for quote in brief.indices}
     if brief.hero.last > 0:
         by_name[brief.hero.name] = brief.hero
     quotes = [by_name[name] for name in TAPE_ORDER if name in by_name and by_name[name].last > 0]
     if not quotes:
         return
+    if heading:
+        canvas.text(canvas.pad, canvas.y, heading, canvas.font("medium", 18), TEXT)
+        canvas.y += 32
     columns = 4 if len(quotes) > 4 else len(quotes)
     width = _content_width()
     cell_w = width / columns
@@ -329,10 +340,10 @@ def _histogram(canvas: Canvas, x: float, y: float, w: float, buckets) -> None:
         canvas.text(bar_x + max(0, (cell - count_w) / 2), y + chart_h + 24, count_text, count_font, MUTED)
 
 
-def _sectors(canvas: Canvas, brief: Brief) -> None:
+def _sectors(canvas: Canvas, brief: Brief, title: str = "板块涨跌") -> None:
     if not brief.sectors_up and not brief.sectors_down:
         return
-    _section(canvas, "板块涨跌", brief.sector_source)
+    _section(canvas, title, brief.sector_source)
     gap = 28
     col_w = (_content_width() - gap) / 2
     left_rows = [(item.name, fmt_pct(item.pct), item.pct, f"领涨  {item.leader}" if item.leader else "") for item in brief.sectors_up]
@@ -479,6 +490,14 @@ def _quote_grid(canvas: Canvas, quotes: list[Quote], columns: int = 3) -> None:
     canvas.y = y0 + rows * cell_h + 8
 
 
+def _morning_abroad(canvas: Canvas, brief: Brief) -> None:
+    by_name = {quote.name: quote for quote in brief.overseas}
+    quotes = [by_name[name] for name in MORNING_ABROAD if name in by_name]
+    _section(canvas, "隔夜外盘", "美日韩")
+    _quote_grid(canvas, quotes, columns=3)
+    canvas.gap(8)
+
+
 def _overseas(canvas: Canvas, brief: Brief, include_futures: bool) -> None:
     quotes = list(brief.overseas) + list(brief.fx)
     if include_futures:
@@ -514,7 +533,7 @@ def _news(canvas: Canvas, brief: Brief, title: str) -> None:
 def _watch(canvas: Canvas, brief: Brief) -> None:
     if not brief.narrative.watch:
         return
-    _section(canvas, "开盘关注")
+    _section(canvas, "今日关注")
     for index, item in enumerate(brief.narrative.watch, start=1):
         canvas.text(canvas.pad, canvas.y, f"{index:02d}", canvas.font("bold", 16), AMBER)
         lines = canvas.wrap(item, canvas.font("regular", 16), _content_width() - 48, 2)
@@ -522,33 +541,6 @@ def _watch(canvas: Canvas, brief: Brief) -> None:
             canvas.text(canvas.pad + 40, canvas.y + line_index * 24, line, canvas.font("regular", 16), TEXT)
         canvas.y += max(28, len(lines) * 24) + 10
     canvas.gap(8)
-
-
-def _compact_market(canvas: Canvas, brief: Brief) -> None:
-    if brief.preview and brief.trade_date == brief.generated_at.date():
-        title = "今日收盘速览"
-    elif brief.preview:
-        title = f"{brief.trade_date:%m月%d日}收盘速览"
-    else:
-        title = "A股最新"
-    _section(canvas, title)
-    by_name = {quote.name: quote for quote in brief.indices}
-    by_name[brief.hero.name] = brief.hero
-    quotes = [by_name[name] for name in KEY_NAMES if name in by_name]
-    _quote_grid(canvas, quotes, columns=4)
-    bits = []
-    if brief.breadth:
-        bits.append(f"上涨 {brief.breadth.up}")
-        bits.append(f"下跌 {brief.breadth.down}")
-        bits.append(f"涨停 {brief.breadth.limit_up}")
-        bits.append(f"跌停 {brief.breadth.limit_down}")
-    if brief.main_net is not None:
-        bits.append(f"主力 {fmt_yi(brief.main_net, signed=True)}")
-    if brief.cross and brief.cross.south_net is not None:
-        bits.append(f"南向 {fmt_yi(brief.cross.south_net, signed=True, unit='亿港元')}")
-    if bits:
-        canvas.text(canvas.pad, canvas.y, "    ".join(bits), canvas.font("regular", 14), MUTED)
-        canvas.gap(26)
 
 
 def _footer(canvas: Canvas, brief: Brief) -> None:
@@ -581,12 +573,12 @@ def _draw(brief: Brief) -> Image.Image:
         _sectors(canvas, brief)
         _capital(canvas, brief)
         _overseas(canvas, brief, include_futures=False)
-        _news(canvas, brief, "盘后要闻")
     else:
-        _overseas(canvas, brief, include_futures=True)
-        _news(canvas, brief, "要闻")
+        _tape(canvas, brief, "昨日指数")
+        _sectors(canvas, brief, "昨日板块")
+        _morning_abroad(canvas, brief)
+        _news(canvas, brief, "隔夜要闻")
         _watch(canvas, brief)
-        _compact_market(canvas, brief)
     _footer(canvas, brief)
     return canvas.finish()
 
