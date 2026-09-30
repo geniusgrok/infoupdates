@@ -28,6 +28,7 @@ from a_share_brief.parse import (
 )
 from a_share_brief.rank import select_news
 from a_share_brief.render import render_png
+from a_share_brief.social import social_copy
 
 CST = timezone(timedelta(hours=8))
 
@@ -209,6 +210,7 @@ class FallbackTests(unittest.TestCase):
         now = datetime(2026, 9, 30, 20, 40, tzinfo=CST)
         brief = build_brief("close", MarketData(indices=[], news=[NewsItem(now, "央行今日开展8335亿元隔夜逆回购操作", "东财", 2)]), now=now)
         self.assertEqual(brief.narrative.style, "数据暂缺")
+        self.assertIn("数据暂缺", social_copy(brief))
         with tempfile.TemporaryDirectory() as folder:
             path = render_png(brief, Path(folder) / "empty.png")
             self.assertGreater(path.stat().st_size, 10_000)
@@ -241,6 +243,15 @@ class RenderTests(unittest.TestCase):
                 path = render_png(brief, Path(folder) / f"{kind}.png")
                 self.assertTrue(path.exists())
                 self.assertGreater(path.stat().st_size, 20_000)
+                copy = social_copy(brief)
+                self.assertIn("不构成投资建议", copy)
+                if kind == "close":
+                    self.assertIn("A股收盘综述｜9月30日 周三", copy)
+                    self.assertNotIn("盘后要闻", copy)
+                else:
+                    self.assertIn("A股早盘｜10月1日 周四", copy)
+                    self.assertIn("昨日情绪", copy)
+                    self.assertIn("今日关注", copy)
 
 
 if __name__ == "__main__":

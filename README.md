@@ -19,7 +19,7 @@ python -m a_share_brief close
 python -m a_share_brief morning
 ```
 
-图片写到 `output/close-YYYY-MM-DD.png` 和 `output/morning-YYYY-MM-DD.png`。
+图片写到 `output/close-YYYY-MM-DD.png` 和 `output/morning-YYYY-MM-DD.png`。同名的 `.txt` 是配图文案，可以和图片一起发。
 
 ## 数据
 

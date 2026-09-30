@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from .fetch import CST, MarketData, load_market
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
@@ -62,6 +62,18 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     )
     brief.narrative = build_narrative(brief)
     return brief
+
+
+def edition_date(brief: Brief) -> date:
+    if brief.kind != "morning":
+        return brief.trade_date
+    now = brief.generated_at
+    if now.time() < time(12, 0):
+        return now.date()
+    day = brief.trade_date + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
 
 
 def load_brief(kind: str, now: datetime | None = None) -> Brief:

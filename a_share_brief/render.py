@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, time, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .compose import edition_date
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
 
@@ -134,23 +134,11 @@ def _style_color(style: str) -> tuple[int, int, int]:
     return AMBER
 
 
-def _edition_date(brief: Brief) -> date:
-    if brief.kind != "morning":
-        return brief.trade_date
-    now = brief.generated_at
-    if now.time() < time(12, 0):
-        return now.date()
-    day = brief.trade_date + timedelta(days=1)
-    while day.weekday() >= 5:
-        day += timedelta(days=1)
-    return day
-
-
 def _masthead(canvas: Canvas, brief: Brief) -> None:
     canvas.draw.rectangle((0, 0, canvas.s(canvas.w), canvas.s(4)), fill=AMBER)
     canvas.y = 28
     canvas.text(canvas.pad, canvas.y, "INFOUPDATES", canvas.font("medium", 13), AMBER)
-    shown = _edition_date(brief)
+    shown = edition_date(brief)
     title = f"A股{brief.title}"
     title_font = canvas.font("bold", 40)
     canvas.y += 28

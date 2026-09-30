@@ -4,9 +4,10 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from .compose import brief_text, build_brief
+from .compose import build_brief
 from .fetch import CST, load_market
 from .render import render_png
+from .social import social_copy
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -21,10 +22,14 @@ def main(argv: list[str] | None = None) -> None:
     output = Path(args.output)
     for kind in kinds:
         brief = build_brief(kind, data, now=now)
-        path = render_png(brief, output / f"{kind}-{brief.trade_date.isoformat()}.png")
-        print(brief_text(brief))
-        print()
-        print(path.resolve())
+        stem = output / f"{kind}-{brief.trade_date.isoformat()}"
+        image = render_png(brief, stem.with_suffix(".png"))
+        text = social_copy(brief)
+        copy_path = stem.with_suffix(".txt")
+        copy_path.write_text(text, encoding="utf-8")
+        print(text)
+        print(image.resolve())
+        print(copy_path.resolve())
         print()
 
 
