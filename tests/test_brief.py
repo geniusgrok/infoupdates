@@ -113,6 +113,11 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(leaders[0].leader, "智飞生物")
         self.assertEqual(laggards[0].name, "电子器件")
         self.assertNotIn("次新股", [item.name for item in leaders + laggards])
+        gainers, losers = parse_sina_industries(
+            '{"a":"a,食品,1,1,1,1.2,1,1,sz1,1,1,1,甲","b":"b,钢铁,1,1,1,0.4,1,1,sz2,1,1,1,乙"}'
+        )
+        self.assertEqual([item.name for item in gainers], ["食品", "钢铁"])
+        self.assertEqual(losers, [])
 
     def test_fenbu_and_flow_units(self) -> None:
         breadth = parse_fenbu(FENBU, limit_up=52, limit_down=9)

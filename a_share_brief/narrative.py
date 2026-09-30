@@ -108,23 +108,23 @@ def _watch(brief: Brief, style: str) -> list[str]:
     if brief.sectors_up:
         top = brief.sectors_up[0]
         leader = f"，领涨{top.leader}" if top.leader else ""
-        items.append(f"{top.name}昨日{fmt_pct(top.pct)}{leader}。")
+        items.append(f"{top.name}{brief.session_label()}{fmt_pct(top.pct)}{leader}。")
     if brief.sectors_down:
         worst = brief.sectors_down[0]
         leader = f"，领跌{worst.leader}" if worst.leader else ""
-        items.append(f"{worst.name}昨日{fmt_pct(worst.pct)}{leader}。")
+        items.append(f"{worst.name}{brief.session_label()}{fmt_pct(worst.pct)}{leader}。")
     for flow in brief.sector_in:
         if any(flow.name in text for text in items):
             continue
-        items.append(f"{flow.name}昨日主力净流入{fmt_yi(flow.net, signed=True)}。")
+        items.append(f"{flow.name}{brief.session_label()}主力净流入{fmt_yi(flow.net, signed=True)}。")
         if len(items) >= 3:
             break
     if len(items) < 3 and brief.sector_out:
         for flow in brief.sector_out:
             if any(flow.name in text for text in items):
                 continue
-            items.append(f"{flow.name}昨日主力净流出{fmt_yi(flow.net, signed=True)}。")
+            items.append(f"{flow.name}{brief.session_label()}主力净流出{fmt_yi(flow.net, signed=True)}。")
             break
     if not items and style:
-        items.append("昨日板块分化，开盘先看强势板块能否延续、弱势板块有没有承接。")
+        items.append(f"{brief.session_label()}板块分化，开盘先看强势板块能否延续、弱势板块有没有承接。")
     return items[:3]

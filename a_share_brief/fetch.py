@@ -14,7 +14,6 @@ from .parse import (
     INDEX_ORDER,
     OVERSEAS_ORDER,
     combine_quotes,
-    parse_cme_future,
     parse_cn_index,
     parse_cross_border,
     parse_fenbu,
@@ -27,12 +26,11 @@ from .parse import (
     parse_qq_capital,
     parse_qq_fx,
     parse_qq_quote,
-    parse_qq_spark,
     parse_sina_board_money,
     parse_sina_bundle,
     parse_sina_industries,
-    parse_spark_closes,
     parse_us_index,
+    INDEX_NAMES,
 )
 
 CST = timezone(timedelta(hours=8))
@@ -97,6 +95,7 @@ def _headline(title: str, body: str) -> str:
 QQ = "https://gu.qq.com"
 QQ_INDEXES = "sh000001,sz399001,sz399006,sh000300,sh000016,sh000905,sh000852,sh000688"
 QQ_GLOBAL = "usDJI,usIXIC,usINX,hkHSI,hkHSTECH,whUSDCNY"
+QQ_FILLABLE = ("道琼斯", "纳斯达克", "标普500", "恒生指数", "恒生科技")
 FFLOW_HOST = "https://push2his.eastmoney.com"
 
 
@@ -134,7 +133,7 @@ def _indices_qq() -> list[Quote]:
     bundle = _qq(QQ_INDEXES)
     quotes: list[Quote] = []
     for symbol in INDEX_SYMBOLS:
-        quote = parse_qq_quote(symbol, bundle.get(symbol, ""), INDEX_ORDER[INDEX_SYMBOLS.index(symbol)], "cn")
+        quote = parse_qq_quote(symbol, bundle.get(symbol, ""), INDEX_NAMES[symbol], "cn")
         if quote:
             quotes.append(quote)
     if not any(quote.name == "上证指数" and quote.last > 0 for quote in quotes):
@@ -143,7 +142,7 @@ def _indices_qq() -> list[Quote]:
 
 
 def _overseas_sina() -> tuple[list[Quote], list[Quote], list[Quote]]:
-    symbols = "gb_dji,gb_ixic,gb_inx,rt_hkHSI,rt_hkHSTECH,b_NKY,b_KOSPI,b_KOSDAQ,fx_susdcny,fx_susdcnh,hf_ES,hf_NQ"
+    symbols = "gb_dji,gb_ixic,gb_inx,rt_hkHSI,rt_hkHSTECH,b_NKY,b_KOSPI,b_KOSDAQ,fx_susdcny,fx_susdcnh"
     bundle = _sina(symbols)
     overseas = [
         item
@@ -167,17 +166,9 @@ def _overseas_sina() -> tuple[list[Quote], list[Quote], list[Quote]]:
         )
         if item
     ]
-    futures = [
-        item
-        for item in (
-            parse_cme_future("hf_ES", bundle.get("hf_ES", ""), "标普500期货"),
-            parse_cme_future("hf_NQ", bundle.get("hf_NQ", ""), "纳斯达克期货"),
-        )
-        if item
-    ]
-    if not overseas and not fx and not futures:
+    if not overseas and not fx:
         raise RuntimeError("新浪外盘为空")
-    return overseas, fx, futures
+    return overseas, fx, []
 
 
 def _overseas_qq() -> tuple[list[Quote], list[Quote]]:
@@ -218,27 +209,6 @@ def _board_money() -> tuple[list[SectorMove], list[SectorMove], list[SectorFlow]
     if not leaders and not inflow:
         raise RuntimeError("新浪行业资金为空")
     return leaders, laggards, inflow, outflow
-
-
-def _spark_sina() -> list[float]:
-    url = (
-        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        "CN_MarketData.getKLineData?symbol=sh000001&scale=240&ma=no&datalen=24"
-    )
-    payload = json.loads(fetch_text(url, SINA, encoding="utf-8"))
-    closes = parse_spark_closes(payload)
-    if len(closes) < 2:
-        raise RuntimeError("新浪K线为空")
-    return closes
-
-
-def _spark_qq() -> list[float]:
-    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000001,day,,,24,qfq"
-    payload = json.loads(fetch_text(url, QQ, timeout=12, retries=0))
-    closes = parse_qq_spark(payload)
-    if len(closes) < 2:
-        raise RuntimeError("腾讯K线为空")
-    return closes
 
 
 def _capital_em(secid: str, market: str) -> CapitalMix:
@@ -425,7 +395,7 @@ def load_overseas() -> tuple[list[Quote], list[Quote], list[Quote], str | None]:
     qq_fx: list[Quote] = []
     have = {quote.name for quote in overseas}
     fx_names = {quote.name for quote in fx}
-    if any(name not in have for name in OVERSEAS_ORDER if name != "日经225") or "在岸人民币" not in fx_names:
+    if any(name not in have for name in QQ_FILLABLE) or "在岸人民币" not in fx_names:
         found = _try("腾讯外盘", _overseas_qq)
         if found:
             qq_overseas, qq_fx = found
@@ -434,8 +404,12 @@ def load_overseas() -> tuple[list[Quote], list[Quote], list[Quote], str | None]:
     note = _note_for(status, "外盘改用腾讯行情", "")
     if fx_status == "fallback" and not note:
         note = "汇率改用腾讯行情"
-    if not merged and not fx_merged and not futures:
+    if not merged and not fx_merged:
         note = "外盘暂缺"
+    elif merged:
+        missing = [name for name in ("日经225", "韩国KOSPI", "韩国KOSDAQ") if name not in {quote.name for quote in merged}]
+        if missing and not note:
+            note = "、".join(missing) + "暂缺"
     return merged, fx_merged, futures, note or None
 
 
@@ -460,13 +434,6 @@ def load_flows() -> tuple[list[SectorFlow], list[SectorFlow], str, str | None]:
         _, _, inflow, outflow = money
         return inflow, outflow, "新浪行业", "行业资金改用新浪"
     return [], [], "东财行业", "行业资金暂缺"
-
-
-def load_spark() -> list[float]:
-    closes = _try("新浪K线", _spark_sina)
-    if closes:
-        return closes
-    return _try("腾讯K线", _spark_qq) or []
 
 
 def load_capital() -> tuple[list[CapitalMix], str | None]:
@@ -507,7 +474,6 @@ def load_market() -> MarketData:
         "overseas": load_overseas,
         "sectors": load_sectors,
         "flows": load_flows,
-        "spark": load_spark,
         "capital": load_capital,
         "breadth": lambda: _try("涨跌分布", lambda: _breadth(day)),
         "cross": lambda: _try("跨境资金", fetch_cross_border),
@@ -551,7 +517,6 @@ def load_market() -> MarketData:
         flow_source=flows[2],
         breadth=results.get("breadth"),
         cross=results.get("cross"),
-        spark=results.get("spark") or [],
         news=results.get("news") or [],
         notes=notes,
     )

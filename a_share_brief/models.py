@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 
 @dataclass
@@ -136,6 +136,21 @@ class Brief:
         if self.hero.name == name:
             return self.hero
         return None
+
+    def edition_date(self) -> date:
+        if self.kind != "morning":
+            return self.trade_date
+        if self.generated_at.time() < time(12, 0):
+            return self.generated_at.date()
+        day = self.trade_date + timedelta(days=1)
+        while day.weekday() >= 5:
+            day += timedelta(days=1)
+        return day
+
+    def session_label(self) -> str:
+        if self.trade_date < self.edition_date():
+            return "昨日"
+        return f"{self.trade_date.month}月{self.trade_date.day}日"
 
     @property
     def main_net(self) -> float | None:

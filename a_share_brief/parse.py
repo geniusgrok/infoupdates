@@ -258,10 +258,7 @@ def parse_sina_industries(text: str, limit: int = 5) -> tuple[list[SectorMove], 
         if leader.startswith(("*ST", "ST")):
             leader = ""
         rows.append(SectorMove(name=_clean_label(parts[1]), pct=pct, leader=leader))
-    rows.sort(key=lambda item: item.pct, reverse=True)
-    if not rows:
-        return [], []
-    return rows[:limit], list(reversed(rows[-limit:]))
+    return _split_moves(rows, limit)
 
 
 def parse_fflow_line(market: str, line: str) -> CapitalMix | None:
@@ -544,13 +541,18 @@ def parse_sina_board_money(text: str, limit: int = 5) -> tuple[list[SectorMove],
             leader = ""
         moves.append(SectorMove(name=name, pct=pct, leader=leader))
         flows.append(SectorFlow(code=str(row.get("category") or ""), name=name, net=net))
-    moves.sort(key=lambda item: item.pct, reverse=True)
     ranked = sorted(flows, key=lambda item: item.net, reverse=True)
     inflow = [item for item in ranked if item.net > 0][:limit]
     outflow = sorted((item for item in ranked if item.net < 0), key=lambda item: item.net)[:limit]
-    leaders = moves[:limit]
-    laggards = list(reversed(moves[-limit:])) if moves else []
+    leaders, laggards = _split_moves(moves, limit)
     return leaders, laggards, inflow, outflow
+
+
+def _split_moves(rows: list[SectorMove], limit: int) -> tuple[list[SectorMove], list[SectorMove]]:
+    ordered = sorted(rows, key=lambda item: item.pct, reverse=True)
+    leaders = [item for item in ordered if item.pct > 0][:limit]
+    laggards = [item for item in reversed(ordered) if item.pct < 0][:limit]
+    return leaders, laggards
 
 
 def merge_quotes(primary: list[Quote], secondary: list[Quote], order: tuple[str, ...] = ()) -> list[Quote]:

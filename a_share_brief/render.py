@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .compose import edition_date
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
 
@@ -138,7 +137,7 @@ def _masthead(canvas: Canvas, brief: Brief) -> None:
     canvas.draw.rectangle((0, 0, canvas.s(canvas.w), canvas.s(4)), fill=AMBER)
     canvas.y = 28
     canvas.text(canvas.pad, canvas.y, "INFOUPDATES", canvas.font("medium", 13), AMBER)
-    shown = edition_date(brief)
+    shown = brief.edition_date()
     title = f"A股{brief.title}"
     title_font = canvas.font("bold", 40)
     canvas.y += 28
@@ -167,7 +166,7 @@ def _direction(canvas: Canvas, brief: Brief) -> None:
     y = canvas.y
     canvas.round(x, y, _content_width(), height, CARD, radius=16, outline=LINE)
     canvas.draw.rectangle((canvas.s(x), canvas.s(y + 16), canvas.s(x + 4), canvas.s(y + height - 16)), fill=AMBER)
-    label = "昨日情绪" if brief.kind == "morning" else "市场方向"
+    label = f"{brief.session_label()}情绪" if brief.kind == "morning" else "市场方向"
     canvas.text(x + 22, y + 16, label, canvas.font("regular", 13), AMBER)
     style_color = _style_color(brief.narrative.style)
     canvas.text(x + 22, y + 36, brief.narrative.style, canvas.font("bold", 28), style_color)
@@ -486,14 +485,11 @@ def _morning_abroad(canvas: Canvas, brief: Brief) -> None:
     canvas.gap(8)
 
 
-def _overseas(canvas: Canvas, brief: Brief, include_futures: bool) -> None:
+def _overseas(canvas: Canvas, brief: Brief) -> None:
     quotes = list(brief.overseas) + list(brief.fx)
-    if include_futures:
-        quotes += list(brief.futures)
     if not quotes:
         return
-    note = "期货为夜盘，相对前结"
-    _section(canvas, "外围市场", note if include_futures else "收盘价")
+    _section(canvas, "外围市场", "收盘价")
     _quote_grid(canvas, quotes, columns=3)
     canvas.gap(8)
 
@@ -560,10 +556,11 @@ def _draw(brief: Brief) -> Image.Image:
         _sentiment(canvas, brief)
         _sectors(canvas, brief)
         _capital(canvas, brief)
-        _overseas(canvas, brief, include_futures=False)
+        _overseas(canvas, brief)
     else:
-        _tape(canvas, brief, "昨日指数")
-        _sectors(canvas, brief, "昨日板块")
+        label = brief.session_label()
+        _tape(canvas, brief, f"{label}指数")
+        _sectors(canvas, brief, f"{label}板块")
         _morning_abroad(canvas, brief)
         _news(canvas, brief, "隔夜要闻")
         _watch(canvas, brief)

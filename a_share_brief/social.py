@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .compose import edition_date
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
 from .parse import INDEX_ORDER
@@ -16,7 +15,7 @@ def social_copy(brief: Brief) -> str:
 
 
 def _dated_title(brief: Brief) -> str:
-    shown = edition_date(brief)
+    shown = brief.edition_date()
     return f"A股{brief.title}｜{shown.month}月{shown.day}日 {weekday_cn(shown)}"
 
 
@@ -103,11 +102,11 @@ def _morning_copy(brief: Brief) -> str:
         _dated_title(brief),
         f"对照{brief.trade_date.month}月{brief.trade_date.day}日收盘，看隔夜美日韩和今天该盯的板块。",
         "",
-        "昨日情绪",
+        f"{brief.session_label()}情绪",
         f"{brief.narrative.style}，情绪{brief.narrative.sentiment}。",
         brief.narrative.summary,
         "",
-        "昨日指数",
+        f"{brief.session_label()}指数",
         *_quote_lines(_pick(brief, INDEX_ORDER, brief.indices)),
     ]
     if brief.breadth:
@@ -117,7 +116,7 @@ def _morning_copy(brief: Brief) -> str:
         )
     sectors = _sector_lines(brief)
     if sectors:
-        blocks.extend(["", "昨日板块", *sectors])
+        blocks.extend(["", f"{brief.session_label()}板块", *sectors])
     abroad = _quote_lines(_pick(brief, MORNING_ABROAD, brief.overseas))
     if abroad:
         blocks.extend(["", "隔夜外盘", *abroad])

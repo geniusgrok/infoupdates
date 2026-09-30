@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 WEEKDAYS = "一二三四五六日"
 MILLION = 1_000_000
@@ -24,14 +24,6 @@ def fmt_pct(value: float | None, digits: int = 2) -> str:
     if abs(value) < 0.005:
         return f"{0:.{digits}f}%"
     return f"{value:+.{digits}f}%"
-
-
-def fmt_pts(value: float | None) -> str:
-    if value is None:
-        return "—"
-    if abs(value) < 0.005:
-        return "0.00"
-    return f"{value:+,.2f}"
 
 
 def fmt_yi(value: float | None, unit: str = "亿", signed: bool = False, digits: int = 1) -> str:
@@ -68,11 +60,3 @@ def million_to_ccy(value: float | None) -> float | None:
     if value is None:
         return None
     return float(value) * MILLION
-
-
-def clock(moment: datetime) -> str:
-    return moment.strftime("%H:%M")
-
-
-def day_label(moment: datetime) -> str:
-    return moment.strftime("%Y.%m.%d")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 from .models import NewsItem
 
@@ -86,6 +86,8 @@ def select_news(
     now: datetime,
     limit: int = 7,
 ) -> list[NewsItem]:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone(timedelta(hours=8)))
     if kind == "morning":
         fresh_after = datetime.combine(trade_date, time(15, 0), tzinfo=now.tzinfo)
     else:
