@@ -406,10 +406,6 @@ def load_overseas() -> tuple[list[Quote], list[Quote], list[Quote], str | None]:
         note = "汇率改用腾讯行情"
     if not merged and not fx_merged:
         note = "外盘暂缺"
-    elif merged:
-        missing = [name for name in ("日经225", "韩国KOSPI", "韩国KOSDAQ") if name not in {quote.name for quote in merged}]
-        if missing and not note:
-            note = "、".join(missing) + "暂缺"
     return merged, fx_merged, futures, note or None
 
 
