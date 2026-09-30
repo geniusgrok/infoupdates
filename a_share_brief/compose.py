@@ -11,9 +11,9 @@ from .rank import select_news
 
 def _hero(indices: list[Quote]) -> Quote:
     for quote in indices:
-        if quote.symbol == "sh000001":
+        if quote.name == "上证指数" and quote.last > 0:
             return quote
-    raise RuntimeError("缺少上证指数")
+    return Quote("sh000001", "上证指数", 0.0)
 
 
 def _turnover(indices: list[Quote]) -> float | None:
@@ -56,6 +56,8 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
         news=news,
         narrative=Narrative(style="", sentiment="", summary="", watch=[]),
         turnover=_turnover(data.indices),
+        sector_source=data.sector_source,
+        flow_source=data.flow_source,
         notes=list(data.notes),
     )
     brief.narrative = build_narrative(brief)

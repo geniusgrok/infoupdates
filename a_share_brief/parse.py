@@ -339,6 +339,254 @@ def parse_cross_border(north_row: dict | None, south_rows: dict[str, dict]) -> C
     )
 
 
+QQ_RE = re.compile(r'v_([A-Za-z0-9]+)="([^"]*)"')
+
+INDEX_ORDER = (
+    "上证指数",
+    "深证成指",
+    "创业板指",
+    "沪深300",
+    "上证50",
+    "中证500",
+    "中证1000",
+    "科创50",
+)
+OVERSEAS_ORDER = ("道琼斯", "纳斯达克", "标普500", "恒生指数", "恒生科技", "日经225")
+
+
+def parse_qq_bundle(text: str) -> dict[str, str]:
+    return {match.group(1): match.group(2) for match in QQ_RE.finditer(text)}
+
+
+def _stamp_index(parts: list[str]) -> int | None:
+    for index, part in enumerate(parts):
+        if re.fullmatch(r"\d{14}", part) or re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", part):
+            return index
+    return None
+
+
+def _split_stamp(stamp: str, kind: str) -> tuple[str, str]:
+    compact = re.fullmatch(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})\d{2}", stamp)
+    if compact:
+        day = f"{compact.group(1)}-{compact.group(2)}-{compact.group(3)}"
+        clock = f"{compact.group(4)}:{compact.group(5)}"
+        if kind == "us":
+            return day, f"{compact.group(2)}-{compact.group(3)} 收盘"
+        if kind == "hk":
+            return day, f"{compact.group(2)}-{compact.group(3)} {clock}"
+        if kind == "fx":
+            return day, clock
+        return day, ""
+    match = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})(?:\s+(\d{2}:\d{2}))?", stamp)
+    if not match:
+        return "", ""
+    day = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    clock = match.group(4) or ""
+    if kind == "us":
+        return day, f"{match.group(2)}-{match.group(3)} 收盘"
+    if kind == "hk":
+        label = f"{match.group(2)}-{match.group(3)}"
+        if clock:
+            label += f" {clock}"
+        return day, label
+    if kind == "fx":
+        return day, clock
+    return day, ""
+
+
+def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote | None:
+    if not body:
+        return None
+    parts = body.split("~")
+    if len(parts) < 6:
+        return None
+    try:
+        last = float(parts[3])
+    except ValueError:
+        return None
+    if last <= 0:
+        return None
+    prev = _optional_float(parts[4])
+    open_ = _optional_float(parts[5])
+    change = pct = high = low = None
+    trade_day = ""
+    session = ""
+    stamp_at = _stamp_index(parts)
+    if stamp_at is not None:
+        trade_day, session = _split_stamp(parts[stamp_at], kind)
+        numbers: list[float] = []
+        for part in parts[stamp_at + 1 :]:
+            try:
+                numbers.append(float(part))
+            except ValueError:
+                if numbers:
+                    break
+                continue
+            if len(numbers) >= 4:
+                break
+        if numbers:
+            change = numbers[0]
+        if len(numbers) > 1:
+            pct = numbers[1]
+        if len(numbers) > 2:
+            high = numbers[2]
+        if len(numbers) > 3:
+            low = numbers[3]
+    if pct is None and prev:
+        pct = (last - prev) / prev * 100
+    if change is None and prev is not None:
+        change = last - prev
+    amount = None
+    if kind == "cn" and len(parts) > 37:
+        wan = _optional_float(parts[37])
+        if wan and wan > 1000:
+            amount = wan * 10000
+    if kind == "cn":
+        session = ""
+    return Quote(
+        symbol=symbol,
+        name=name,
+        last=last,
+        pct=pct,
+        change=change,
+        open=open_,
+        high=high,
+        low=low,
+        prev_close=prev,
+        amount=amount,
+        session=session,
+        trade_day=trade_day,
+    )
+
+
+def _optional_float(value: str) -> float | None:
+    if value in {"", "--", "-"}:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def parse_qq_fx(symbol: str, body: str, name: str) -> Quote | None:
+    if not body:
+        return None
+    parts = body.split("~")
+    if len(parts) < 8:
+        return None
+    last = _optional_float(parts[3])
+    if last is None or last <= 0:
+        return None
+    stamp_at = _stamp_index(parts)
+    pct = None
+    session = ""
+    trade_day = ""
+    if stamp_at is not None:
+        trade_day, session = _split_stamp(parts[stamp_at], "fx")
+        small: list[float] = []
+        for part in parts[stamp_at + 1 :]:
+            value = _optional_float(part)
+            if value is None:
+                continue
+            if abs(value) < 2:
+                small.append(value)
+            if len(small) >= 2:
+                break
+        if len(small) >= 2:
+            pct = small[1]
+        elif small:
+            pct = small[0]
+    return Quote(symbol=symbol, name=name, last=last, pct=pct, session=session, trade_day=trade_day)
+
+
+def parse_qq_capital(market: str, payload: dict) -> CapitalMix | None:
+    flow = ((payload.get("data") or {}).get("todayFundFlow")) or payload.get("todayFundFlow") or {}
+    try:
+        return CapitalMix(
+            market=market,
+            main=float(flow["mainNetIn"]),
+            super_order=float(flow["superFlow"]),
+            large=float(flow["bigFlow"]),
+            mid=float(flow["normalFlow"]),
+            small=float(flow["smallFlow"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def parse_qq_spark(payload: dict) -> list[float]:
+    node = ((payload.get("data") or {}).get("sh000001")) or {}
+    rows = node.get("day") or node.get("qfqday") or []
+    closes: list[float] = []
+    for row in rows:
+        try:
+            closes.append(float(row[2]))
+        except (IndexError, TypeError, ValueError):
+            continue
+    return closes
+
+
+def parse_sina_board_money(text: str, limit: int = 5) -> tuple[list[SectorMove], list[SectorMove], list[SectorFlow], list[SectorFlow]]:
+    payload = json.loads(text)
+    moves: list[SectorMove] = []
+    flows: list[SectorFlow] = []
+    for row in payload:
+        name = _clean_label(str(row.get("name") or ""))
+        if not name or name in SKIP_SECTORS:
+            continue
+        try:
+            pct = float(row["avg_changeratio"]) * 100
+            net = float(row["netamount"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        leader = str(row.get("ts_name") or "")
+        if leader.startswith(("*ST", "ST")):
+            leader = ""
+        moves.append(SectorMove(name=name, pct=pct, leader=leader))
+        flows.append(SectorFlow(code=str(row.get("category") or ""), name=name, net=net))
+    moves.sort(key=lambda item: item.pct, reverse=True)
+    ranked = sorted(flows, key=lambda item: item.net, reverse=True)
+    inflow = [item for item in ranked if item.net > 0][:limit]
+    outflow = sorted((item for item in ranked if item.net < 0), key=lambda item: item.net)[:limit]
+    leaders = moves[:limit]
+    laggards = list(reversed(moves[-limit:])) if moves else []
+    return leaders, laggards, inflow, outflow
+
+
+def merge_quotes(primary: list[Quote], secondary: list[Quote], order: tuple[str, ...] = ()) -> list[Quote]:
+    chosen: dict[str, Quote] = {}
+    for quote in secondary:
+        if quote.last > 0:
+            chosen[quote.name] = quote
+    for quote in primary:
+        if quote.last > 0:
+            chosen[quote.name] = quote
+    if not order:
+        return list(chosen.values())
+    ordered = [chosen[name] for name in order if name in chosen]
+    ordered.extend(quote for name, quote in chosen.items() if name not in order)
+    return ordered
+
+
+def combine_quotes(
+    primary: list[Quote] | None,
+    secondary: list[Quote] | None,
+    order: tuple[str, ...] = (),
+    required: str | None = None,
+) -> tuple[list[Quote], str]:
+    first = primary or []
+    second = secondary or []
+    merged = merge_quotes(first, second, order)
+    if required and not any(item.name == required and item.last > 0 for item in merged):
+        return merged, "missing"
+    if not first and second:
+        return merged, "fallback"
+    names = {item.name for item in first}
+    if any(item.name not in names for item in merged):
+        return merged, "partial"
+    return merged, "primary"
+
+
 def parse_spark_closes(payload: list[dict]) -> list[float]:
     closes: list[float] = []
     for row in payload:

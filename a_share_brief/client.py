@@ -34,6 +34,12 @@ def fetch_bytes(url: str, referer: str, timeout: float = 20, retries: int = 2) -
     raise RuntimeError(f"fetch failed: {url}") from last_error
 
 
-def fetch_text(url: str, referer: str, encoding: str = "utf-8", timeout: float = 20) -> str:
-    raw = fetch_bytes(url, referer=referer, timeout=timeout)
+def fetch_text(
+    url: str,
+    referer: str,
+    encoding: str = "utf-8",
+    timeout: float = 15,
+    retries: int = 1,
+) -> str:
+    raw = fetch_bytes(url, referer=referer, timeout=timeout, retries=retries)
     return raw.decode(encoding, errors="replace")

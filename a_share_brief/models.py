@@ -119,6 +119,8 @@ class Brief:
     news: list[NewsItem]
     narrative: Narrative
     turnover: float | None
+    sector_source: str = "新浪行业"
+    flow_source: str = "东财行业"
     notes: list[str] = field(default_factory=list)
 
     @property

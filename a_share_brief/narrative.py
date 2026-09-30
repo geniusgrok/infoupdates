@@ -61,6 +61,8 @@ def _style_clause(style: str, sz50: Quote | None, kc: Quote | None) -> str:
 
 def build_narrative(brief: Brief) -> Narrative:
     hero = brief.hero
+    if hero.last <= 0:
+        return Narrative("数据暂缺", "—", "指数行情没有取到，其余内容按已经返回的数据展示。", _watch(brief, "结构分化"))
     sz50 = brief.index("上证50")
     kc = brief.index("科创50")
     cyb = brief.index("创业板指")

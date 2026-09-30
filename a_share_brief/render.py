@@ -193,6 +193,8 @@ def _direction(canvas: Canvas, brief: Brief) -> None:
 
 def _hero(canvas: Canvas, brief: Brief) -> None:
     hero = brief.hero
+    if hero.last <= 0:
+        return
     height = 176
     x = canvas.pad
     y = canvas.y
@@ -368,7 +370,7 @@ def _histogram(canvas: Canvas, x: float, y: float, w: float, buckets) -> None:
 def _sectors(canvas: Canvas, brief: Brief) -> None:
     if not brief.sectors_up and not brief.sectors_down:
         return
-    _section(canvas, "板块涨跌", "新浪行业")
+    _section(canvas, "板块涨跌", brief.sector_source)
     gap = 28
     col_w = (_content_width() - gap) / 2
     left_rows = [(item.name, fmt_pct(item.pct), item.pct, f"领涨  {item.leader}" if item.leader else "") for item in brief.sectors_up]
@@ -442,7 +444,7 @@ def _capital(canvas: Canvas, brief: Brief) -> None:
         top = canvas.y
         canvas.text(canvas.pad, top, "净流入", canvas.font("regular", 13), AMBER)
         canvas.text(canvas.pad + col_w + gap, top, "净流出", canvas.font("regular", 13), AMBER)
-        canvas.text_right(canvas.w - canvas.pad, top + 1, "东财行业", canvas.font("regular", 12), DIM)
+        canvas.text_right(canvas.w - canvas.pad, top + 1, brief.flow_source, canvas.font("regular", 12), DIM)
         left = [(item.name, fmt_yi(item.net, signed=True), item.net, "") for item in brief.sector_in]
         right = [(item.name, fmt_yi(item.net, signed=True), item.net, "") for item in brief.sector_out]
         left_h = _column_bars(canvas, canvas.pad, top + 22, col_w, "", left)

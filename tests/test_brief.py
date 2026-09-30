@@ -10,12 +10,19 @@ from a_share_brief.fetch import MarketData
 from a_share_brief.format import fmt_amount, fmt_yi, million_to_ccy
 from a_share_brief.models import NewsItem, Quote
 from a_share_brief.parse import (
+    INDEX_ORDER,
+    combine_quotes,
     parse_cme_future,
     parse_cn_index,
     parse_fenbu,
     parse_fflow_line,
     parse_fx,
     parse_hk_index,
+    parse_qq_capital,
+    parse_qq_fx,
+    parse_qq_quote,
+    parse_qq_spark,
+    parse_sina_board_money,
     parse_sina_industries,
     parse_us_index,
 )
@@ -129,6 +136,82 @@ class ParseTests(unittest.TestCase):
         picked = select_news(items, kind="close", trade_date=now.date(), now=now, limit=3)
         self.assertTrue(picked[0].title.startswith("9月30日收评"))
         self.assertNotIn("减持", " ".join(item.title for item in picked))
+
+
+QQ_SH = (
+    "1~上证指数~000001~3842.19~3830.45~3839.25~414560247~0~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~~"
+    "20260930161500~11.74~0.31~3851.22~3833.09~3842.19/414560247/679398992445~414560247~67939899"
+)
+QQ_US = (
+    "200~道琼斯~.DJI~51349.92~51481.51~51416.96~386242184~0~0~51239.37~0~0~0~0~0~0~0~0~0~51502.79~0~0~0~0~0~0~0~0~0~~"
+    "2026-09-29 16:38:50~-131.59~-0.26~51505.19~51129.18~USD"
+)
+QQ_HK = (
+    "100~恒生指数~HSI~24613.270~24523.570~24393.880~1~0~0~24613.270~0~0~0~0~0~0~0~0~0~24613.270~0~0~0~0~0~0~0~0~0~0.0~"
+    "2026/09/30 16:08:50~89.700~0.37~24637.650~24332.640"
+)
+QQ_FX = "310~美元人民币~USDCNY~6.7046~0~20260930210758~6.7065~6.7050~6.7055~6.7030~6.7046~6.7047~-0.0019~-0.03~0.06"
+BOARD_MONEY = (
+    '[{"name":"生物制药","avg_changeratio":"0.0245828","netamount":"5385744875.06","ts_name":"智飞生物","category":"new_swzz"},'
+    '{"name":"电子器件","avg_changeratio":"-0.019066","netamount":"-1200000000","ts_name":"*ST测试","category":"new_dzqj"}]'
+)
+
+
+class FallbackTests(unittest.TestCase):
+    def test_tencent_quotes(self) -> None:
+        quote = parse_qq_quote("sh000001", QQ_SH, "上证指数", "cn")
+        assert quote is not None
+        self.assertAlmostEqual(quote.last, 3842.19, places=2)
+        self.assertAlmostEqual(quote.pct or 0, 0.31, places=2)
+        self.assertEqual(quote.trade_day, "2026-09-30")
+        self.assertAlmostEqual(quote.amount or 0, 679398990000, places=-3)
+        dow = parse_qq_quote("gb_dji", QQ_US, "道琼斯", "us")
+        assert dow is not None
+        self.assertAlmostEqual(dow.pct or 0, -0.26, places=2)
+        self.assertEqual(dow.session, "09-29 收盘")
+        hsi = parse_qq_quote("rt_hkHSI", QQ_HK, "恒生指数", "hk")
+        assert hsi is not None
+        self.assertAlmostEqual(hsi.last, 24613.27, places=2)
+        self.assertIn("09-30", hsi.session)
+        fx = parse_qq_fx("fx_susdcny", QQ_FX, "在岸人民币")
+        assert fx is not None
+        self.assertAlmostEqual(fx.last, 6.7046, places=4)
+        self.assertAlmostEqual(fx.pct or 0, -0.03, places=2)
+        closes = parse_qq_spark({"data": {"sh000001": {"day": [["2026-09-29", "1", "3830.45", "2", "3", "4"], ["2026-09-30", "1", "3842.19", "2", "3", "4"]]}}})
+        self.assertEqual(closes, [3830.45, 3842.19])
+
+    def test_board_money_and_source_choice(self) -> None:
+        leaders, laggards, inflow, outflow = parse_sina_board_money(BOARD_MONEY)
+        self.assertAlmostEqual(leaders[0].pct, 2.45828, places=3)
+        self.assertEqual(leaders[0].leader, "智飞生物")
+        self.assertEqual(laggards[0].leader, "")
+        self.assertEqual(outflow[0].name, "电子器件")
+        primary = [Quote("sh000001", "上证指数", 1, pct=0.1)]
+        secondary = [Quote("sh000001", "上证指数", 9, pct=9), Quote("sh000688", "科创50", 2, pct=-1)]
+        merged, status = combine_quotes(primary, secondary, INDEX_ORDER, required="上证指数")
+        self.assertEqual(status, "partial")
+        self.assertEqual(merged[0].last, 1)
+        star = next(item for item in merged if item.name == "科创50")
+        self.assertEqual(star.last, 2)
+        fallback, fallback_status = combine_quotes([], secondary, INDEX_ORDER, required="上证指数")
+        self.assertEqual(fallback_status, "fallback")
+        self.assertEqual(fallback[0].name, "上证指数")
+        missing, missing_status = combine_quotes([], [], INDEX_ORDER, required="上证指数")
+        self.assertEqual(missing_status, "missing")
+        capital = parse_qq_capital(
+            "沪市",
+            {"data": {"todayFundFlow": {"mainNetIn": "-100", "superFlow": "-40", "bigFlow": "-60", "normalFlow": "10", "smallFlow": "90"}}},
+        )
+        assert capital is not None
+        self.assertAlmostEqual(capital.main, capital.super_order + capital.large)
+
+    def test_missing_index_still_renders(self) -> None:
+        now = datetime(2026, 9, 30, 20, 40, tzinfo=CST)
+        brief = build_brief("close", MarketData(indices=[], news=[NewsItem(now, "央行今日开展8335亿元隔夜逆回购操作", "东财", 2)]), now=now)
+        self.assertEqual(brief.narrative.style, "数据暂缺")
+        with tempfile.TemporaryDirectory() as folder:
+            path = render_png(brief, Path(folder) / "empty.png")
+            self.assertGreater(path.stat().st_size, 10_000)
 
 
 class RenderTests(unittest.TestCase):
