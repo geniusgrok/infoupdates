@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .format import fmt_amount, fmt_pct, fmt_pts, fmt_px, fmt_yi, weekday_cn
+from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
 
 WIDTH = 1080
@@ -21,13 +21,11 @@ MUTED = (164, 172, 182)
 DIM = (112, 122, 134)
 RED = (255, 92, 92)
 GREEN = (38, 196, 146)
-UP_BG = (64, 28, 30)
-DOWN_BG = (16, 52, 44)
 FLAT_BG = (36, 40, 46)
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT_DIR = ROOT / "assets" / "fonts"
-TAPE_ORDER = ("深证成指", "创业板指", "沪深300", "上证50", "中证500", "中证1000", "科创50")
+TAPE_ORDER = ("上证指数", "深证成指", "创业板指", "沪深300", "上证50", "中证500", "中证1000", "科创50")
 KEY_NAMES = ("上证指数", "深证成指", "创业板指", "科创50")
 
 
@@ -123,12 +121,6 @@ def _tone(value: float | None) -> tuple[int, int, int]:
     return RED if value > 0 else GREEN
 
 
-def _tone_bg(value: float | None) -> tuple[int, int, int]:
-    if value is None or abs(value) < 0.005:
-        return FLAT_BG
-    return UP_BG if value > 0 else DOWN_BG
-
-
 def _content_width() -> int:
     return WIDTH - PAD * 2
 
@@ -144,15 +136,20 @@ def _style_color(style: str) -> tuple[int, int, int]:
 def _masthead(canvas: Canvas, brief: Brief) -> None:
     canvas.draw.rectangle((0, 0, canvas.s(canvas.w), canvas.s(4)), fill=AMBER)
     canvas.y = 28
-    kicker = canvas.font("medium", 13)
-    canvas.text(canvas.pad, canvas.y, "INFOUPDATES", kicker, AMBER)
-    date_font = canvas.font("medium", 16)
-    sub_font = canvas.font("regular", 13)
-    right = canvas.w - canvas.pad
-    canvas.text_right(right, canvas.y - 2, f"{brief.trade_date:%Y.%m.%d}", date_font, TEXT)
-    canvas.text_right(right, canvas.y + 20, weekday_cn(brief.trade_date), sub_font, MUTED)
+    canvas.text(canvas.pad, canvas.y, "INFOUPDATES", canvas.font("medium", 13), AMBER)
+    title = f"A股{brief.title}"
+    title_font = canvas.font("bold", 40)
     canvas.y += 28
-    canvas.text(canvas.pad, canvas.y, f"A股{brief.title}", canvas.font("bold", 40), TEXT)
+    canvas.text(canvas.pad, canvas.y, title, title_font, TEXT)
+    if brief.kind == "close":
+        date_label = f"{brief.trade_date.month}月{brief.trade_date.day}日  {weekday_cn(brief.trade_date)}"
+        date_font = canvas.font("bold", 28)
+        title_w = title_font.getlength(title) / canvas.scale
+        canvas.text(canvas.pad + title_w + 20, canvas.y + 10, date_label, date_font, AMBER)
+    else:
+        right = canvas.w - canvas.pad
+        canvas.text_right(right, canvas.y - 22, f"{brief.trade_date:%Y.%m.%d}", canvas.font("medium", 16), TEXT)
+        canvas.text_right(right, canvas.y, weekday_cn(brief.trade_date), canvas.font("regular", 13), MUTED)
     canvas.y += 52
     if brief.kind == "close":
         subtitle = "股指  ·  板块  ·  资金  ·  情绪  ·  方向"
@@ -191,77 +188,42 @@ def _direction(canvas: Canvas, brief: Brief) -> None:
     canvas.y += height + 18
 
 
-def _hero(canvas: Canvas, brief: Brief) -> None:
-    hero = brief.hero
-    if hero.last <= 0:
-        return
-    height = 176
-    x = canvas.pad
-    y = canvas.y
-    width = _content_width()
-    canvas.round(x, y, width, height, CARD, radius=16, outline=LINE)
-    canvas.text(x + 22, y + 16, hero.name, canvas.font("regular", 14), MUTED)
-    color = _tone(hero.pct)
-    canvas.text(x + 22, y + 42, fmt_px(hero.last), canvas.font("bold", 54), TEXT)
-    canvas.text(x + 22, y + 108, fmt_pts(hero.change), canvas.font("medium", 18), color)
-    pct = fmt_pct(hero.pct)
-    pct_font = canvas.font("bold", 18)
-    pct_w = pct_font.getlength(pct) / canvas.scale + 22
-    canvas.round(x + 150, y + 106, pct_w, 30, _tone_bg(hero.pct), radius=8)
-    canvas.text(x + 161, y + 110, pct, pct_font, color)
-    meta = canvas.font("regular", 13)
-    bits = []
-    if hero.open is not None:
-        bits.append(f"开 {fmt_px(hero.open)}")
-    if hero.high is not None:
-        bits.append(f"高 {fmt_px(hero.high)}")
-    if hero.low is not None:
-        bits.append(f"低 {fmt_px(hero.low)}")
-    if hero.amount is not None:
-        bits.append(f"沪市成交 {fmt_amount(hero.amount)}")
-    canvas.text(x + 22, y + 144, "    ".join(bits), meta, DIM)
-    if len(brief.spark) >= 2:
-        _spark(canvas, x + width - 250, y + 48, 210, 72, brief.spark, AMBER)
-        canvas.text(x + width - 250, y + 126, "上证近24个交易日", canvas.font("regular", 11), DIM)
-    canvas.y += height + 14
-
-
-def _spark(canvas: Canvas, x: float, y: float, w: float, h: float, values: list[float], color: tuple[int, int, int]) -> None:
-    low, high = min(values), max(values)
-    span = high - low or 1
-    points: list[tuple[float, float]] = []
-    for index, value in enumerate(values):
-        px = x + w * index / (len(values) - 1)
-        py = y + h - ((value - low) / span) * h
-        points.append((canvas.s(px), canvas.s(py)))
-    canvas.draw.line(points, fill=color, width=max(2, canvas.scale))
-    last_x, last_y = points[-1]
-    radius = 3.5 * canvas.scale
-    canvas.draw.ellipse((last_x - radius, last_y - radius, last_x + radius, last_y + radius), fill=color)
-
-
 def _tape(canvas: Canvas, brief: Brief) -> None:
     by_name = {quote.name: quote for quote in brief.indices}
-    quotes = [by_name[name] for name in TAPE_ORDER if name in by_name]
+    if brief.hero.last > 0:
+        by_name[brief.hero.name] = brief.hero
+    quotes = [by_name[name] for name in TAPE_ORDER if name in by_name and by_name[name].last > 0]
     if not quotes:
         return
+    columns = 4 if len(quotes) > 4 else len(quotes)
     width = _content_width()
-    cell_w = width / len(quotes)
-    height = 86
+    cell_w = width / columns
+    cell_h = 78
+    rows = (len(quotes) + columns - 1) // columns
+    height = rows * cell_h
     y = canvas.y
     canvas.round(canvas.pad, y, width, height, CARD, radius=14, outline=LINE)
     for index, quote in enumerate(quotes):
-        cell_x = canvas.pad + index * cell_w
-        if index:
+        col = index % columns
+        row = index // columns
+        cell_x = canvas.pad + col * cell_w
+        cell_y = y + row * cell_h
+        if col:
             canvas.draw.line(
-                (canvas.s(cell_x), canvas.s(y + 14), canvas.s(cell_x), canvas.s(y + height - 14)),
+                (canvas.s(cell_x), canvas.s(cell_y + 12), canvas.s(cell_x), canvas.s(cell_y + cell_h - 12)),
                 fill=HAIR,
                 width=canvas.scale,
             )
-        text_x = cell_x + 12
-        canvas.text(text_x, y + 12, quote.name, canvas.font("regular", 12), DIM)
-        canvas.text(text_x, y + 32, fmt_px(quote.last), canvas.font("medium", 15), TEXT)
-        canvas.text(text_x, y + 56, fmt_pct(quote.pct), canvas.font("medium", 13), _tone(quote.pct))
+        if row:
+            canvas.draw.line(
+                (canvas.s(canvas.pad + 16), canvas.s(cell_y), canvas.s(canvas.pad + width - 16), canvas.s(cell_y)),
+                fill=HAIR,
+                width=canvas.scale,
+            )
+        text_x = cell_x + 16
+        canvas.text(text_x, cell_y + 12, quote.name, canvas.font("regular", 13), DIM)
+        canvas.text(text_x, cell_y + 32, fmt_px(quote.last), canvas.font("medium", 18), TEXT)
+        canvas.text(text_x, cell_y + 54, fmt_pct(quote.pct), canvas.font("medium", 14), _tone(quote.pct))
     canvas.y += height + 22
 
 
@@ -614,7 +576,6 @@ def _draw(brief: Brief) -> Image.Image:
     _masthead(canvas, brief)
     _direction(canvas, brief)
     if brief.kind == "close":
-        _hero(canvas, brief)
         _tape(canvas, brief)
         _sentiment(canvas, brief)
         _sectors(canvas, brief)
