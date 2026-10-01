@@ -40,11 +40,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p archive
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=market-archive&per_page=100" > /tmp/archive-artifacts.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/artifacts?name=market-archive&per_page=100" > /tmp/archive-artifacts.json
           BRIEF_ARTIFACT_ID=$(python - <<'PY'
           import json
           from pathlib import Path
-          artifacts = json.loads(Path('/tmp/archive-artifacts.json').read_text())['artifacts']
+          pages = json.loads(Path('/tmp/archive-artifacts.json').read_text())
+          artifacts = [artifact for page in pages for artifact in page['artifacts']]
           usable = [a for a in artifacts if a['name'] == 'market-archive' and not a['expired']
                     and a.get('workflow_run', {}).get('head_branch') == 'main']
           print(max(usable, key=lambda a: a['created_at'])['id'] if usable else '')
