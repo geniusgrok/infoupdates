@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from a_share_brief import __main__ as cli
-from a_share_brief.fetch import CST, MarketData
-from a_share_brief.models import Quote
+from ashare import __main__ as cli
+from ashare.fetch import CST, MarketData
+from ashare.models import Quote
 
 
 def market(day: str) -> MarketData:

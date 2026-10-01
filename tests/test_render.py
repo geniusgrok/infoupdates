@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from a_share_brief import render
-from a_share_brief.compose import build_brief
-from a_share_brief.fetch import MarketData
-from a_share_brief.models import Breadth, CapitalMix, CrossBorder, CST, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
+from ashare import render
+from ashare.compose import build_brief
+from ashare.fetch import MarketData
+from ashare.models import Breadth, CapitalMix, CrossBorder, CST, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
 
 
 class AuditedCanvas(render.Canvas):

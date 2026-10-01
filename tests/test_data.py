@@ -7,9 +7,9 @@ from datetime import date
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
-from a_share_brief import fetch, parse
-from a_share_brief.format import fmt_amount, fmt_pct, fmt_px, fmt_yi
-from a_share_brief.models import CapitalMix, Quote, TurnoverComparison
+from ashare import fetch, parse
+from ashare.format import fmt_amount, fmt_pct, fmt_px, fmt_yi
+from ashare.models import CapitalMix, Quote, TurnoverComparison
 
 
 def cn_body(last: str = '3842.19') -> str:

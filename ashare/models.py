@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from math import isfinite
 
+from brief_common.news import NewsItem
+
 CST = timezone(timedelta(hours=8))
 
 # 上交所年度休市通知；调休的周末仍不开市。
@@ -129,15 +131,6 @@ class CrossBorder:
     south_sh: float | None = None
     south_sz: float | None = None
     trade_day: str = ""
-
-
-@dataclass
-class NewsItem:
-    published: datetime
-    title: str
-    source: str
-    source_score: float = 1
-    rank: float = 0
 
 
 @dataclass

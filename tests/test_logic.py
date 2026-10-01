@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
-from a_share_brief.compose import build_brief
-from a_share_brief.fetch import MarketData
-from a_share_brief.models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, TurnoverComparison
-from a_share_brief.narrative import market_summary
-from a_share_brief.rank import select_news
-from a_share_brief.social import social_copy
+from ashare.compose import build_brief
+from ashare.fetch import MarketData
+from ashare.models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, TurnoverComparison
+from ashare.narrative import market_summary
+from ashare.rank import select_news
+from ashare.social import social_copy
 
 CST = timezone(timedelta(hours=8))
 
@@ -186,7 +186,7 @@ class AmountAndNarrativeTests(unittest.TestCase):
         self.assertEqual(brief.narrative.sentiment, "待确认")
 
     def test_negative_flow_has_no_double_negative(self) -> None:
-        from a_share_brief.models import SectorFlow
+        from ashare.models import SectorFlow
         data = market()
         data.sector_out = [SectorFlow("1", "半导体", -100e8)]
         brief = build_brief("morning", data, datetime(2026, 9, 30, 20, tzinfo=CST))

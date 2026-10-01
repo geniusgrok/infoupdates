@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import html
 import json
-import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from urllib.parse import quote
 
+from brief_common.news import em_items as _em_items, wscn_items as _wscn_items
+
 from .client import fetch_text
-from .models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
+from .models import CST, Breadth, CapitalMix, CrossBorder, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
 from .parse import (
     INDEX_ORDER,
     OVERSEAS_ORDER,
@@ -34,12 +34,9 @@ from .parse import (
     INDEX_NAMES,
 )
 
-CST = timezone(timedelta(hours=8))
 SINA = "https://finance.sina.com.cn"
 EM = "https://data.eastmoney.com/"
 QUOTE = "https://quote.eastmoney.com/"
-WSCN = "https://wallstreetcn.com/"
-KUAIXUN = "https://kuaixun.eastmoney.com/"
 
 INDEX_SYMBOLS = (
     "sh000001",
@@ -74,24 +71,6 @@ class MarketData:
     flow_source: str = "东财行业"
     notes: list[str] = field(default_factory=list)
     turnover_comparison: TurnoverComparison | None = None
-
-
-def _clean(text: str) -> str:
-    value = html.unescape(text or "")
-    value = re.sub(r"<[^>]+>", "", value)
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def _headline(title: str, body: str) -> str:
-    title = _clean(title)
-    if len(title) >= 8:
-        return title
-    text = _clean(body)
-    if "。" in text:
-        first = text.split("。", 1)[0].strip()
-        if 8 <= len(first) <= 56:
-            return first
-    return text[:48].strip()
 
 
 QQ = "https://gu.qq.com"
@@ -310,55 +289,6 @@ def fetch_cross_border(trade_day: str = "") -> CrossBorder:
     if result.north_turnover is None and result.south_net is None:
         raise RuntimeError("跨境资金为空")
     return result
-
-
-def _wscn_items(channel: str, pages: int = 3) -> list[NewsItem]:
-    items: list[NewsItem] = []
-    cursor = ""
-    for _ in range(pages):
-        url = f"https://api-one.wallstcn.com/apiv1/content/lives?channel={channel}&client=pc&limit=50"
-        if cursor:
-            url += f"&cursor={cursor}"
-        payload = json.loads(fetch_text(url, WSCN))
-        data = payload.get("data") or {}
-        for raw in data.get("items") or []:
-            title = _headline(raw.get("title") or "", raw.get("content_text") or raw.get("content") or "")
-            if not title:
-                continue
-            published = datetime.fromtimestamp(int(raw.get("display_time") or 0), CST)
-            items.append(
-                NewsItem(
-                    published=published,
-                    title=title,
-                    source="见闻",
-                    source_score=float(raw.get("score") or 1),
-                )
-            )
-        cursor = str(data.get("next_cursor") or "")
-        if not cursor:
-            break
-    return items
-
-
-def _em_items(column: str) -> list[NewsItem]:
-    url = (
-        "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
-        f"?client=web&biz=web_724&fastColumn={column}&sortEnd=&pageSize=20&req_trace=1"
-    )
-    payload = json.loads(fetch_text(url, KUAIXUN))
-    items: list[NewsItem] = []
-    for raw in ((payload.get("data") or {}).get("fastNewsList")) or []:
-        title = _headline(raw.get("title") or "", raw.get("summary") or "")
-        if not title:
-            continue
-        published = datetime.strptime(raw["showTime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST)
-        score = float(raw.get("titleColor") or 0)
-        if column == "102" and score < 2:
-            continue
-        if score <= 0:
-            score = 1.4
-        items.append(NewsItem(published=published, title=title, source="东财", source_score=score))
-    return items
 
 
 def _news() -> list[NewsItem]:

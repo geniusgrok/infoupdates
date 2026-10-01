@@ -5,11 +5,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from a_share_brief.compose import build_brief
-from a_share_brief.fetch import MarketData
-from a_share_brief.format import fmt_amount, fmt_yi, million_to_ccy
-from a_share_brief.models import NewsItem, Quote
-from a_share_brief.parse import (
+from ashare.compose import build_brief
+from ashare.fetch import MarketData
+from ashare.format import fmt_amount, fmt_yi, million_to_ccy
+from ashare.models import NewsItem, Quote
+from ashare.parse import (
     INDEX_ORDER,
     combine_quotes,
     parse_cme_future,
@@ -26,9 +26,9 @@ from a_share_brief.parse import (
     parse_sina_industries,
     parse_us_index,
 )
-from a_share_brief.rank import select_news
-from a_share_brief.render import render_png
-from a_share_brief.social import social_copy
+from ashare.rank import select_news
+from ashare.render import render_png
+from ashare.social import social_copy
 
 CST = timezone(timedelta(hours=8))
 
