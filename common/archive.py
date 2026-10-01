@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -9,7 +10,6 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 
 SCHEMA = """
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS reports (
     market TEXT NOT NULL, session TEXT NOT NULL, edition_date TEXT NOT NULL,
     generated_at TEXT NOT NULL, data TEXT NOT NULL, path TEXT NOT NULL UNIQUE
 );
-CREATE INDEX IF NOT EXISTS report_editions ON reports(market, session, edition_date, generated_at);
+CREATE INDEX IF NOT EXISTS report_editions ON reports(market, session, edition_date);
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, at TEXT NOT NULL, source TEXT NOT NULL,
     first_seen TEXT NOT NULL
@@ -64,27 +64,12 @@ def identity(value) -> str:
     return hashlib.sha256(encode(value).encode("utf-8")).hexdigest()
 
 
-@lru_cache(maxsize=1)
-def code_version() -> str:
-    """程序和字体变更也生成新版本，避免幂等复用阻止排版更新。"""
-    root = Path(__file__).resolve().parents[1]
-    paths = [path for package in ("common", "ashare", "usstock", "weekly", "review")
-             for path in (root / package).rglob("*.py")]
-    paths += list((root / "assets" / "fonts").glob("*.ttf"))
-    digest = hashlib.sha256()
-    for path in sorted(paths):
-        digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
-
-
 def _sync_directory(path: Path) -> None:
-    if os.name == "posix":
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -117,7 +102,7 @@ class Archive:
         db.execute("PRAGMA foreign_keys=ON")
         try:
             if write:
-                # ponytail: 串行发布确保并发幂等；高频发布时再改成独立发布队列。
+                # 写事务串行检查与发布，避免并发重复生成。
                 db.execute("BEGIN IMMEDIATE")
             yield db
             db.commit()
@@ -140,7 +125,52 @@ class Archive:
             )
         return key
 
-    def publish(self, market: str, brief, capture_id: str, render, text: str, stem: Path) -> tuple[Path, Path]:
+    @contextmanager
+    def run(self):
+        """同一归档的命令串行运行；进程退出后系统自动释放锁。"""
+        with (self.root / ".run.lock").open("a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("同一归档已有任务运行，等待完成后检查结果……")
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _result(db, market: str, session: str, day: str):
+        return db.execute(
+            "SELECT * FROM reports WHERE market=? AND session=? AND edition_date=? "
+            "ORDER BY generated_at DESC, rowid DESC LIMIT 1", (market, session, day),
+        ).fetchone()
+
+    def _complete(self, row) -> bool:
+        return row is not None and all((self.root / row["path"] / name).is_file()
+                                       for name in ("image.png", "summary.txt", "data.json"))
+
+    def _export(self, row, stem: Path) -> tuple[Path, Path]:
+        folder = self.root / row["path"]
+        image, text = stem.with_suffix(".png"), stem.with_suffix(".txt")
+        atomic_write(image, (folder / "image.png").read_bytes())
+        atomic_write(text, (folder / "summary.txt").read_bytes())
+        return image, text
+
+    def reuse(self, market: str, session: str, day: date, stem: Path) -> bool:
+        """已有完整结果就恢复输出并提示；缺失产物按未完成处理。"""
+        with self.connect(write=True) as db:
+            row = self._result(db, market, session, day.isoformat())
+            if not self._complete(row):
+                return False
+            image, text = self._export(row, stem)
+        print(f"{market} / {session} / {day} 已有运行结果，跳过生成；使用 --force 可重新生成并覆盖。")
+        print(image.resolve())
+        print(text.resolve())
+        return True
+
+    def publish(self, market: str, brief, capture_id: str, render, text: str, stem: Path,
+                *, force: bool = False) -> tuple[Path, Path]:
         data = plain(brief)
         if market == "ashare":
             data["intraday"] = brief.is_intraday
@@ -150,53 +180,49 @@ class Archive:
             raise ValueError("不支持的归档版面")
         date.fromisoformat(day)
         stamp = utc(datetime.fromisoformat(data["generated_at"]))
-        stable = {key: value for key, value in data.items() if key != "generated_at"}
-        version = code_version()
-        key = identity([market, capture_id, version, stable])
-        relative = Path("reports") / day / f"{market}-{session}" / key
-        folder = self.root / relative
+        key = f"{market}-{session}-{day}"
+        parent = self.root / "reports" / day / f"{market}-{session}"
+        stage = None
+        try:
+            with self.connect(write=True) as db:
+                row = self._result(db, market, session, day)
+                if not force and self._complete(row):
+                    print(f"{key} 已有运行结果，跳过生成；使用 --force 可重新生成并覆盖。")
+                    return self._export(row, stem)
+                capture = db.execute("SELECT * FROM captures WHERE id=?", (capture_id,)).fetchone()
+                if capture is None or capture["market"] != market:
+                    raise ValueError("归档缺少本次原始数据")
+                parent.mkdir(parents=True, exist_ok=True)
+                stage = Path(tempfile.mkdtemp(prefix=".pending-", dir=parent))
+                render(brief, stage / "image.png")
+                (stage / "summary.txt").write_text(text, encoding="utf-8")
+                (stage / "data.json").write_text(encode({
+                    "capture_id": capture_id, "captured_at": capture["first_seen"], "market": market,
+                    "snapshot": json.loads(capture["data"]), "brief": data,
+                }), encoding="utf-8")
+                for artifact in stage.iterdir():
+                    with artifact.open("rb") as handle:
+                        os.fsync(handle.fileno())
+                _sync_directory(stage)
+                # 独立产物目录先完成，再切换数据库指向；覆盖失败不损坏原归档。
+                folder = parent / stage.name.removeprefix(".pending-")
+                os.replace(stage, folder)
+                _sync_directory(parent)
+                relative = folder.relative_to(self.root).as_posix()
+                db.execute("DELETE FROM reports WHERE market=? AND session=? AND edition_date=?", (market, session, day))
+                db.execute("INSERT INTO reports VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (key, capture_id, market, session, day, stamp, encode(data), relative))
+                paths = self._export({"path": relative}, stem)
+        finally:
+            if stage is not None:
+                shutil.rmtree(stage, ignore_errors=True)
+        # 提交后清理被替换或中断留下的目录，当前结果始终保留。
         with self.connect(write=True) as db:
-            capture = db.execute("SELECT * FROM captures WHERE id=?", (capture_id,)).fetchone()
-            if capture is None or capture["market"] != market:
-                raise ValueError("归档缺少本次原始数据")
-            existing = db.execute("SELECT id FROM reports WHERE id=?", (key,)).fetchone()
-            if existing is None:
-                folder.parent.mkdir(parents=True, exist_ok=True)
-                stage = Path(tempfile.mkdtemp(prefix=".pending-", dir=folder.parent))
-                try:
-                    render(brief, stage / "image.png")
-                    (stage / "summary.txt").write_text(text, encoding="utf-8")
-                    (stage / "data.json").write_text(encode({
-                        "schema": 1, "capture_id": capture_id, "revision_id": key, "code_version": version,
-                        "captured_at": capture["first_seen"], "market": market,
-                        "snapshot": json.loads(capture["data"]), "brief": data,
-                    }), encoding="utf-8")
-                    for artifact in stage.iterdir():
-                        with artifact.open("rb") as handle:
-                            os.fsync(handle.fileno())
-                    _sync_directory(stage)
-                    # 提交失败可能留下完整孤立目录；重试采用本次完整产物。
-                    if folder.exists():
-                        shutil.rmtree(folder)
-                    os.replace(stage, folder)
-                    _sync_directory(folder.parent)
-                    db.execute("INSERT INTO reports VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                               (key, capture_id, market, session, day, stamp, encode(data), relative.as_posix()))
-                finally:
-                    shutil.rmtree(stage, ignore_errors=True)
-            else:
-                if not all((folder / name).is_file() for name in ("image.png", "summary.txt", "data.json")):
-                    raise OSError(f"归档产物缺失，请从备份恢复：{folder}")
-            # 较早任务迟到时保留最新版本；同一输入重试沿用首次生成时间。
-            head = db.execute(
-                "SELECT path FROM reports WHERE market=? AND session=? AND edition_date=? "
-                "ORDER BY generated_at DESC, rowid DESC LIMIT 1", (market, session, day),
-            ).fetchone()
-            source = self.root / head["path"]
-            image, copy = stem.with_suffix(".png"), stem.with_suffix(".txt")
-            atomic_write(image, (source / "image.png").read_bytes())
-            atomic_write(copy, (source / "summary.txt").read_bytes())
-        return image, copy
+            used = {row["path"] for row in db.execute("SELECT path FROM reports")}
+            for child in parent.iterdir():
+                if child.is_dir() and child.relative_to(self.root).as_posix() not in used:
+                    shutil.rmtree(child, ignore_errors=True)
+        return paths
 
     def snapshots(self, *, through: datetime | None = None) -> list[dict]:
         with self.connect() as db:
@@ -207,7 +233,11 @@ class Archive:
 
     def reports(self, *, through: datetime | None = None) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute("SELECT * FROM reports ORDER BY generated_at DESC, rowid DESC").fetchall()
+            rows = db.execute(
+                "SELECT * FROM reports AS r WHERE r.rowid=(SELECT rowid FROM reports "
+                "WHERE market=r.market AND session=r.session AND edition_date=r.edition_date "
+                "ORDER BY generated_at DESC, rowid DESC LIMIT 1) ORDER BY generated_at DESC, rowid DESC"
+            ).fetchall()
         cutoff = utc(through) if through is not None else None
         return [dict(row) | {"data": json.loads(row["data"])} for row in rows
                 if cutoff is None or row["generated_at"] <= cutoff]

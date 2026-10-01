@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from common.archive import Archive
@@ -17,30 +17,36 @@ from .render import render_png
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="用已归档数据生成1080×1620跨市场每周精选")
     parser.add_argument("--week", type=date.fromisoformat, help="交易周的周一日期；默认最近结束的一周")
-    parser.add_argument("--archive", default="archive")
-    parser.add_argument("--output", default="output")
+    parser.add_argument("--archive", default="archive", help="持久归档目录；各模块应共用")
+    parser.add_argument("--output", default="output", help="图片与文字输出目录")
     parser.add_argument("--backfill", action="store_true", help="先从免费历史日线补录本周与上周行情")
+    parser.add_argument("--force", action="store_true", help="重新统计和生成，成功后覆盖已有结果")
     args = parser.parse_args(argv)
-    now = datetime.now(timezone.utc)
     try:
-        start = week_start(now, args.week)
         archive = Archive(args.archive)
-        if args.backfill:
-            from .backfill import backfill
-            for message in backfill(archive, start, now):
-                print(message)
-        # 日历覆盖下一周；日报仍然只采用未来三天的下一事件。
-        events = load_events(now, days=10)
-        track_events(archive, [], events, now)
-        collect_releases(archive, now)
-        brief = build_weekly(archive, now, week=start)
-        capture_id = archive.capture("weekly", {key: value for key, value in brief.items() if key != "generated_at"}, now)
-        stem = Path(args.output) / f"weekly-{brief['edition_date']}"
-        image, copy = archive.publish("weekly", brief, capture_id, render_png, social_copy(brief), stem)
-        print(copy.read_text(encoding="utf-8"))
-        print(image.resolve())
-        print(copy.resolve())
-        print(build_history(archive).resolve())
+        with archive.run():
+            now = datetime.now(timezone.utc)
+            start = week_start(now, args.week)
+            day = start + timedelta(days=5)
+            stem = Path(args.output) / f"weekly-{day}"
+            if not args.force and archive.reuse("weekly", "weekly", day, stem):
+                print(build_history(archive).resolve())
+                return
+            if args.backfill:
+                from .backfill import backfill
+                for message in backfill(archive, start, now):
+                    print(message)
+            # 周报日历覆盖下一周；日报仍只采用未来三天的下一事件。
+            events = load_events(now, days=10)
+            track_events(archive, [], events, now)
+            collect_releases(archive, now)
+            brief = build_weekly(archive, now, week=start)
+            capture_id = archive.capture("weekly", {key: value for key, value in brief.items() if key != "generated_at"}, now)
+            image, text = archive.publish("weekly", brief, capture_id, render_png, social_copy(brief), stem, force=args.force)
+            print(text.read_text(encoding="utf-8"))
+            print(image.resolve())
+            print(text.resolve())
+            print(build_history(archive).resolve())
     except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
         parser.error(str(exc))
 

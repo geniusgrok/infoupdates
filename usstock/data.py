@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time
-from typing import Callable
 
 from common.news import em_items, wscn_items
 from .cache import apply_cache
@@ -16,7 +15,6 @@ from .models import (
 )
 from .sources import cboe, futu, nasdaq, webull, yahoo
 
-Clock = Callable[[], datetime]
 SYMBOLS = {**INDEX_NAMES, **FUTURE_NAMES, **MEGA_NAMES, **SECTOR_NAMES, **MACRO_NAMES, "SPY": "SPY日线股数"}
 
 
@@ -114,7 +112,7 @@ def _merge(target: MarketData, partial: MarketData, symbol: str, now: datetime) 
     target.notes.extend(partial.notes)
 
 
-def _load_symbol(symbol: str, name: str, now: datetime, clock: Clock | None) -> MarketData:
+def _load_symbol(symbol: str, name: str) -> MarketData:
     result = MarketData()
     if symbol in MEGA_NAMES or symbol in SECTOR_NAMES or symbol == "SPY":
         providers = (yahoo, nasdaq, futu)
@@ -123,31 +121,29 @@ def _load_symbol(symbol: str, name: str, now: datetime, clock: Clock | None) -> 
     else:
         providers = (yahoo, cboe, futu)
     for provider in providers:
-        current = new_york_time(clock() if clock is not None else now)
+        current = _clock()
         if provider is not yahoo and all(
             (quote := getattr(result, bag).get(symbol)) is not None and _quality(quote, bag, symbol, current) >= 2
             for bag in _required(symbol, current)
         ):
             break
         try:
-            options = {"clock": clock} if clock is not None else {}
-            partial = provider.load(symbol, name, current, **options)
-            finished = new_york_time(clock() if clock is not None else now)
+            partial = provider.load(symbol, name, current, clock=_clock)
+            finished = _clock()
             _merge(result, partial, symbol, finished)
         except Exception as exc:
             result.notes.append(f"{provider.__name__.rsplit('.', 1)[-1]} {symbol}暂缺：{type(exc).__name__}")
     return result
 
 
-def load_market(*, now: datetime | None = None) -> MarketData:
-    """live使用响应完成时钟；显式now冻结验证时钟，便于严格回归测试。"""
-    clock = _clock if now is None else None
-    now = new_york_time(now if now is not None else _clock())
+def load_market() -> MarketData:
+    """先尝试免费在线来源，再用缓存；按每次响应完成时钟校验报价。"""
+    now = _clock()
     edition_date("premarket", now)
     last_completed_session(now)
     result = MarketData()
     with ThreadPoolExecutor(max_workers=8) as pool:
-        symbols = {symbol: pool.submit(_load_symbol, symbol, name, now, clock) for symbol, name in SYMBOLS.items()}
+        symbols = {symbol: pool.submit(_load_symbol, symbol, name) for symbol, name in SYMBOLS.items()}
         news = (
             ("见闻美股快讯", pool.submit(wscn_items, "us-stock-channel", 2)),
             ("见闻全球快讯", pool.submit(wscn_items, "global-channel", 2)),
@@ -156,7 +152,7 @@ def load_market(*, now: datetime | None = None) -> MarketData:
         for symbol, future in symbols.items():
             try:
                 partial = future.result()
-                finished = new_york_time(clock() if clock is not None else now)
+                finished = _clock()
                 _merge(result, partial, symbol, finished)
             except Exception as exc:
                 result.notes.append(f"{symbol}行情暂缺：{type(exc).__name__}")
@@ -165,7 +161,7 @@ def load_market(*, now: datetime | None = None) -> MarketData:
                 result.news.extend(future.result())
             except Exception as exc:
                 result.notes.append(f"{label}暂缺：{type(exc).__name__}")
-    finished = new_york_time(clock() if clock is not None else now)
+    finished = _clock()
     target = edition_date("premarket", finished)
     start, end = overnight_window(target)
     missing_night = [symbol for symbol in (*MEGA_NAMES, *SECTOR_NAMES)
@@ -173,7 +169,7 @@ def load_market(*, now: datetime | None = None) -> MarketData:
     if missing_night and start <= finished < end:
         try:
             snapshots = webull.night_snapshots(finished)
-            finished = new_york_time(clock() if clock is not None else now)
+            finished = _clock()
             for symbol in missing_night:
                 raw = snapshots.get(symbol)
                 if raw is not None:

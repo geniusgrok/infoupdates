@@ -41,3 +41,10 @@ def edition_date(kind: str, now: datetime, trade_date: date) -> date:
     if is_trading_day(now.date()) and now.time() < time(15, 0):
         return now.date()
     return next_trading_day(now.date())
+
+
+def latest_quote_date(now: datetime) -> date:
+    """运行前预计的行情日期；生成版面仍以实际报价日期为准。"""
+    if is_trading_day(now.date()) and now.time() >= time(9, 30):
+        return now.date()
+    return previous_trading_day(now.date())

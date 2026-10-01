@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,24 +31,19 @@ def build_history(archive: Archive) -> Path:
     now = datetime.now(timezone.utc)
     cards = []
     # 与发布共用数据库写锁，避免并发生成较旧的索引覆盖新索引。
-    with archive.connect(write=True) as db:
-        rows = db.execute("SELECT * FROM reports ORDER BY edition_date DESC, generated_at DESC, rowid DESC").fetchall()
-        heads = set()
+    with archive.connect(write=True):
+        rows = sorted(archive.reports(), key=lambda row: row["edition_date"], reverse=True)
         for row in rows:
-            data = json.loads(row["data"])
+            data = row["data"]
             label = LABELS[(row["market"], row["session"])]
             if data.get("intraday") and row["session"] == "close":
                 label = "A股盘中快照"
-            key = row["market"], row["session"], row["edition_date"]
-            current = key not in heads
-            heads.add(key)
             folder = archive.root / row["path"]
             text = (folder / "summary.txt").read_text(encoding="utf-8")
             search = escape(label + " " + text, quote=True)
             path = escape(row["path"], quote=True)
             cards.append(f'''<article class="report" data-date="{row['edition_date']}" data-market="{row['market']}"
-data-current="{int(current)}" data-search="{search}">
-<span class="tag">{'当前版本' if current else '历史版本'} · {row['id'][:10]}</span>
+data-search="{search}">
 <h3>{row['edition_date']} · {label}</h3><div class="meta">生成 {escape(data['generated_at'])}</div>
 <a href="{path}/image.png"><img loading="lazy" src="{path}/image.png" alt="{escape(label)}"></a>
 <div class="links"><a href="{path}/image.png">查看图片</a><a href="{path}/summary.txt">文字版</a>
@@ -71,27 +65,27 @@ data-current="{int(current)}" data-search="{search}">
 <div class="meta">事件编号 {event['id']}</div></article>''')
         document = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>市场精选 · 历史回看</title><style>''' + STYLE + '''</style><main>
-<h1>市场精选 · 历史回看</h1><p>按日期、市场和时段回看当时的资讯。图片、文字与完整数据对应同一归档版本。</p>
+<h1>市场精选 · 历史回看</h1><p>按日期、市场和时段回看当时的资讯。图片、文字与完整数据对应同一次生成结果。</p>
 <nav><a href="#reports">日报与周报</a><a href="#events">重点事件跟踪</a></nav>
 <section id="reports"><div class="filters"><label>日期<input id="day" type="date"></label>
 <label>市场<select id="market"><option value="">全部</option><option value="ashare">A股</option>
 <option value="usstock">美股</option><option value="weekly">每周精选</option></select></label>
 <label>时段<select id="session"><option value="">全部</option><option>早盘</option><option>收盘</option>
 <option>盘前</option><option>盘后</option></select></label><input id="query" placeholder="搜索消息或指标" aria-label="搜索消息或指标">
-<label><input id="versions" type="checkbox">显示历史版本</label><button id="reset">清空筛选</button></div>
+<button id="reset">清空筛选</button></div>
 <p id="count"></p><div class="grid">''' + "\n".join(cards) + '''</div><p id="empty" hidden>没有符合条件的内容。</p></section>
 <section id="events"><h2>重点事件跟踪</h2><p>只比较发布前已经留存的同口径预期。行情反应附实际观察窗口，不表示由单一事件导致。</p>
 <div class="grid">''' + "\n".join(event_cards) + '''</div></section></main><script>
-const controls=['day','market','session','query','versions'].map(id=>document.getElementById(id));
-function filter(){const [day,market,session,query,versions]=controls;let count=0;
+const controls=['day','market','session','query'].map(id=>document.getElementById(id));
+function filter(){const [day,market,session,query]=controls;let count=0;
 document.querySelectorAll('.report').forEach(card=>{const d=card.dataset;
 const visible=(!day.value||d.date===day.value)&&(!market.value||d.market===market.value)&&
 (!session.value||card.querySelector('h3').textContent.includes(session.value))&&
-(!query.value||d.search.toLowerCase().includes(query.value.toLowerCase()))&&(versions.checked||d.current==='1');
+(!query.value||d.search.toLowerCase().includes(query.value.toLowerCase()));
 card.hidden=!visible;if(visible)count++;});document.getElementById('count').textContent=`共 ${count} 份`;
 document.getElementById('empty').hidden=count!==0;}
 controls.forEach(control=>control.addEventListener('input',filter));
-document.getElementById('reset').addEventListener('click',()=>{controls.forEach(c=>{c.value='';c.checked=false});filter()});filter();
+document.getElementById('reset').addEventListener('click',()=>{controls.forEach(c=>{c.value=''});filter()});filter();
 </script></html>'''
         path = archive.root / "index.html"
         atomic_write(path, document.encode("utf-8"))
