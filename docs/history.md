@@ -48,7 +48,7 @@ python -m weekly --backfill --archive archive
 
 发布后七天内，日报、周报及 `review events` 会尝试 BLS 无需密钥的公开 API。非农由同一版本的季调就业总人数月差计算，失业率采用官方季调数值；CPI/PPI 同比采用未季调指数、环比采用季调指数计算并按官方常用一位小数记录，CPI 同时保留核心口径。非农、CPI、PPI和失业率分别用稳定 series ID。API 尚未更新、目标统计月份缺失或序列不足时继续待确认，已取得的指标不会因重试新增记录。
 
-官方 API 未披露单次数值的发布时间，因此证据时钟按实际采集时间记录，`source_published_at=null`、`time_basis` 明示该限制；不冒充发布瞬间的初值。前期值使用同一采集版本，可能包含修订。复盘优先采用官方 API，若有 `--verified` 人工核验记录则采用最新核验记录，新闻证据继续保留。
+官方 API 未披露单次数值的发布时间，因此证据时钟按实际采集时间记录，`source_published_at=null`、`time_basis` 明示该限制；不冒充发布瞬间的初值。完整原始 JSON 序列一并保存在 `series_payload`，后续数据修订仍能核对当时的基准与计算输入。前期值使用同一采集版本，可能包含修订。复盘优先采用官方 API，若有 `--verified` 人工核验记录则采用最新核验记录，新闻证据继续保留。
 
 ```bash
 python -m review events --archive archive

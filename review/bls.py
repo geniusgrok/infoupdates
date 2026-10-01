@@ -81,21 +81,23 @@ def collect_releases(archive: Archive, now: datetime) -> None:
             series_id, method = SERIES[name]
             url = BASE + series_id + "?" + urlencode({"startyear": year - 1, "endyear": year})
             try:
-                points = values(json.loads(fetch_text(url, "https://www.bls.gov/", timeout=4, retries=0)), series_id)
+                payload = json.loads(fetch_text(url, "https://www.bls.gov/", timeout=4, retries=0))
+                points = values(payload, series_id)
                 value = calculate(points, period, method)
                 previous_period = (datetime.strptime(period, "%Y-%m") - timedelta(days=1)).strftime("%Y-%m")
                 previous = calculate(points, previous_period, method)
-                return value, previous, series_id, method, url
+                return value, previous, series_id, method, url, payload
             except (OSError, ValueError, TypeError):
-                return None, None, series_id, method, url
+                return None, None, series_id, method, url, None
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(zip(names, pool.map(load, names)))
-        for name, (value, previous, series_id, method, url) in results:
+        for name, (value, previous, series_id, method, url, payload) in results:
             if value is None:
                 continue
             data = {"metric": name, "period": period, "unit": "万人" if name == "非农新增就业" else "%",
                     "value": value, "previous": previous, "source": "美国劳工统计局API", "url": url,
                     "official": True, "series_id": series_id, "method": method,
+                    "series_payload": payload,
                     "time_basis": "采集时间；接口未披露该数值发布时间", "source_published_at": None}
             record_metric(archive, event["id"], "result", data, now, now)

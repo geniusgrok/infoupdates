@@ -56,6 +56,8 @@ class BlsResultsTests(unittest.TestCase):
             event = archive.events()[0]
             self.assertEqual(len(event["evidence"]), 2)
             self.assertTrue(all(item["data"]["source_published_at"] is None for item in event["evidence"]))
+            saved = next(item["data"] for item in event["evidence"] if item["data"]["metric"] == "非农新增就业")
+            self.assertEqual(values(saved["series_payload"], "CES0000000001")["2026-08"], 159075)
             self.assertTrue(any("15万人" in line and "官方API采集版本" in line for line in comparisons(event)))
 
     def test_network_failure_or_not_updated_leaves_result_pending(self):
