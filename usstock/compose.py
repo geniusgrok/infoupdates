@@ -186,6 +186,7 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
         references=references, activity=aligned.get("SPY") if kind == "postmarket" else None,
         notes=list(dict.fromkeys(notes)), stocks_label=stocks_label, complete=complete, extended_stocks=extended_stocks,
     )
-    brief.news = select_news(data.news, kind=kind, reference_date=reference, now=now, limit=6)
+    # 较宽的候选池供精选挑选核心事件；图片仍只展示一条消息。
+    brief.news = select_news(data.news, kind=kind, reference_date=reference, now=now, limit=12)
     brief.headline, brief.sentiment, brief.market_summary = build_narrative(brief)
     return brief

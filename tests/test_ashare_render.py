@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from common.events import CalendarEvent
 from common.render import HEIGHT, WIDTH
 
 from ashare import render
@@ -23,8 +24,9 @@ class AuditedCanvas(render.Canvas):
         self.cards = []
 
     def text(self, *args, **kwargs):
-        bounds = super().text(*args, **kwargs)
-        self.texts.append((args[2], bounds))
+        with patch.object(self.draw, "text", wraps=self.draw.text) as drawing:
+            bounds = super().text(*args, **kwargs)
+        self.texts.append((drawing.call_args.args[1], bounds))
         return bounds
 
     def card(self, x, y, width, height, *args, **kwargs):
@@ -64,9 +66,10 @@ def intersects(a, b):
 
 
 class RenderRegressionTests(unittest.TestCase):
-    def draw_brief(self, kind, data, now=None):
+    def draw_brief(self, kind, data, now=None, event=None):
         now = now or datetime(2026, 9, 30, 20, 40, tzinfo=CST)
         brief = build_brief(kind, data, now=now)
+        brief.event = event
         canvas = AuditedCanvas()
         with tempfile.TemporaryDirectory() as folder, patch.object(render, "Canvas", return_value=canvas):
             path = render.render_png(brief, Path(folder) / "nested" / "poster.png")
@@ -146,7 +149,7 @@ class RenderRegressionTests(unittest.TestCase):
             with self.subTest(up=up, down=down, flat=flat):
                 _, canvas = self.draw_brief("close", data)
                 color = render.HAIR if up + down + flat == 0 else render.RED if up else render.GREEN if down else render.MUTED
-                self.assertEqual(canvas.image.getpixel((800, 613)), color)
+                self.assertEqual(canvas.image.getpixel((800, 597)), color)
 
     def test_utc_time_is_rendered_as_cst(self):
         for kind in ("close", "morning"):
@@ -170,13 +173,66 @@ class RenderRegressionTests(unittest.TestCase):
                 _, canvas = self.draw_brief("morning", data)
                 self.assertTrue(any(value == expected for value, _ in canvas.texts))
 
-    def test_news_are_from_input_and_macro_requires_explicit_actual(self):
+    def test_news_keep_reported_actual_and_expected_in_one_selected_headline(self):
         data = market()
         data.news = [NewsItem(datetime(2026, 9, 30, 19, 30, tzinfo=CST), "美国8月核心PCE物价指数同比 3.1%，预期 3.0%", "见闻", 2)]
         _, canvas = self.draw_brief("morning", data)
-        self.assertTrue(any(value == "3.1%" for value, _ in canvas.texts))
-        self.assertTrue(any(value == "同比 · 预期 3.0%" for value, _ in canvas.texts))
-        self.assertIsNone(render._macro(NewsItem(datetime(2026, 9, 30), "美国今晚公布PCE，市场预期同比3.0%", "见闻")))
+        text = "".join(value for value, _ in canvas.texts)
+        self.assertIn("同比 3.1%，预期 3.0%", text)
+        self.assertIn("09-30 19:30 CST · 见闻", text)
+        data.news[0].title = "美国今晚公布PCE，市场预期同比3.0%"
+        _, canvas = self.draw_brief("morning", data)
+        text = "".join(value for value, _ in canvas.texts)
+        self.assertIn("预期同比3.0%", text)
+        self.assertNotIn("3.1%", text)
+
+    def test_focus_body_uses_two_lines_and_keeps_long_headline_numbers(self):
+        cases = (
+            ("CME FedWatch：美联储10月加息概率较一日前降13.8个百分点 年内至少再加息一次概率降至86.8%", "86.8%", False),
+            ("美联储维持利率不变", "利率不变", True),
+        )
+        for title, detail, show_context in cases:
+            with self.subTest(title=title):
+                data = market()
+                data.news = [NewsItem(datetime(2026, 9, 30, 19, 30, tzinfo=CST), title, "东财", 2)]
+                _, canvas = self.draw_brief("morning", data)
+                body = [value for value, bounds in canvas.texts if bounds[0] >= 204 and 1248 <= bounds[1] < 1362]
+                self.assertEqual(len(body), 2)
+                self.assertIn(detail, "".join(body))
+                context = "关注利率预期变化能否传导至股市。"
+                self.assertEqual(context in body, show_context)
+                if not show_context:
+                    self.assertIn("13.8个", "".join(body))
+                    self.assertFalse(any("…" in value for value in body))
+
+    def test_compact_selection_leaves_complete_data_in_brief(self):
+        for kind in ("close", "morning"):
+            with self.subTest(kind=kind):
+                brief, canvas = self.draw_brief(kind, market())
+                text = "\n".join(value for value, _ in canvas.texts)
+                self.assertIn("生物制药", text)
+                self.assertIn("酿酒行业", text)
+                self.assertIn("电子器件", text)
+                self.assertIn("家用电器", text)
+                self.assertNotIn("金融行业", text)
+                self.assertNotIn("有色金属", text)
+                self.assertNotIn("沪深300", text)
+                self.assertNotIn("中证1000", text)
+                self.assertNotIn("盘中看点", text)
+                self.assertNotIn("外围参考", text)
+                self.assertEqual(len(brief.indices), 8)
+                self.assertEqual(len(brief.sectors_up), 3)
+                self.assertEqual(len(brief.sectors_down), 3)
+
+    def test_holiday_event_keeps_actual_date_and_distinguishes_edition(self):
+        now = datetime(2026, 10, 1, 15, 0, tzinfo=CST)
+        event = CalendarEvent("美国非农就业与失业率", datetime(2026, 10, 2, 20, 30, tzinfo=CST), "美国劳工统计局")
+        _, canvas = self.draw_brief("morning", market(), now, event)
+        text = "\n".join(value for value, _ in canvas.texts)
+        self.assertIn("休市前瞻 · 下次交易10.08 · A股参考09.30", text)
+        self.assertIn("假期关注", text)
+        self.assertIn("计划 10-02 20:30 CST · 美国劳工统计局", text)
+        self.assertNotIn("下一事件", text)
 
 
 if __name__ == "__main__":

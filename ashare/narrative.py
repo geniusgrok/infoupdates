@@ -1,7 +1,46 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from math import isfinite
+
+from common.editorial import FocusItem, build_focus
 from common.format import fmt_pct, fmt_px, fmt_yi
-from .models import Brief, Narrative, Quote, SectorFlow
+from .models import Brief, Narrative, Quote, SectorFlow, china_time
+
+MORNING_ABROAD = ("道琼斯", "纳斯达克", "标普500", "日经225")
+
+
+def headline(brief: Brief) -> str:
+    """图片和摘要共用同一判断，避免两份内容各说一套。"""
+    if brief.kind == "morning":
+        quotes = {quote.name: quote for quote in brief.overseas if isfinite(quote.last) and quote.last > 0}
+        values = [quotes[name].pct if name in quotes else None for name in MORNING_ABROAD[:3]]
+        if any(value is None for value in values):
+            return "美股行情待确认"
+        if all(value > 0 for value in values):
+            return "美股三大指数上涨"
+        if all(value < 0 for value in values):
+            return "美股三大指数下跌"
+        if all(value == 0 for value in values):
+            return "美股三大指数平收"
+        return "美股三大指数涨跌互现"
+    weight, star = brief.index("上证50"), brief.index("科创50")
+    if weight and star and weight.pct is not None and star.pct is not None and weight.pct > 0 > star.pct:
+        return "权重微涨，科创回落" if weight.pct < 1 else "权重走强，科创回落"
+    return {"普涨": "指数与个股走强", "普跌": "指数与个股走弱", "成长占优": "成长板块相对占优",
+            "权重护盘": "权重强于成长", "数据暂缺": "市场数据待确认"}.get(brief.narrative.style, "指数与板块表现分化")
+
+
+def focus_items(brief: Brief) -> list[FocusItem]:
+    watch = "关注领涨方向能否扩散，以及上涨家数与资金是否同步改善。"
+    if brief.narrative.style == "权重护盘":
+        watch = "观察权重强势能否扩散至成长板块，以及资金是否回流。"
+    items = build_focus(brief.news, now=brief.generated_at, market="ashare", watch=watch, event=brief.event)
+    if (brief.kind == "morning" and brief.event is not None
+            and china_time(brief.event.at).date() < brief.edition_date
+            and items[1].label == "下一事件"):
+        items[1] = replace(items[1], label="假期关注")
+    return items
 
 
 def market_summary(brief: Brief) -> str:

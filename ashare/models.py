@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from math import isfinite
 
+from common.events import CalendarEvent
 from common.news import NewsItem
 
 CST = timezone(timedelta(hours=8))
@@ -154,6 +155,7 @@ class Brief:
     flow_source: str = "东财行业"
     notes: list[str] = field(default_factory=list)
     turnover_comparison: TurnoverComparison | None = None
+    event: CalendarEvent | None = None
 
     @property
     def title(self) -> str:

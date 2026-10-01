@@ -8,13 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from common.events import CalendarEvent
 from usstock import __main__ as cli
 from usstock.calendar import edition_date
 from usstock.models import Brief, MarketData, NY
 
 
 class UsCliTests(unittest.TestCase):
-    def run_cli(self, args: list[str], now: datetime, output: Path):
+    def run_cli(self, args: list[str], now: datetime, output: Path, event=None):
         data = MarketData()
 
         def build(kind, market, *, now):
@@ -29,13 +30,22 @@ class UsCliTests(unittest.TestCase):
         stdout = io.StringIO()
         with patch.object(cli, "datetime") as clock, \
                 patch.object(cli, "load_market", return_value=data) as load, \
+                patch.object(cli, "load_next_event", return_value=event) as event_load, \
                 patch.object(cli, "build_brief", side_effect=build) as compose, \
                 patch.object(cli, "render_png", side_effect=save_image) as render, \
                 patch.object(cli, "social_copy", side_effect=lambda b: f"{b.title} {b.edition_date}") as copy, \
                 redirect_stdout(stdout):
             clock.now.return_value = now
             cli.main([*args, "--output", str(output)])
+        event_load.assert_called_once_with(now)
         return stdout.getvalue(), load, compose, render, copy
+
+    def test_one_calendar_capture_reaches_both_briefs(self) -> None:
+        now = datetime(2026, 10, 1, 8, tzinfo=NY)
+        event = CalendarEvent("美国非农就业与失业率", datetime(2026, 10, 2, 8, 30, tzinfo=NY), "美国劳工统计局")
+        with tempfile.TemporaryDirectory() as folder:
+            _, _, _, render, _ = self.run_cli(["all"], now, Path(folder), event=event)
+            self.assertTrue(all(call.args[0].event is event for call in render.call_args_list))
 
     def test_all_uses_each_edition_and_single_capture(self) -> None:
         now = datetime(2026, 10, 1, 17, tzinfo=NY)

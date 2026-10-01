@@ -5,6 +5,7 @@ from datetime import date, datetime
 from math import isfinite
 from zoneinfo import ZoneInfo
 
+from common.events import CalendarEvent
 from common.news import NewsItem
 
 NY = ZoneInfo("America/New_York")
@@ -145,6 +146,7 @@ class Brief:
     stocks_label: str = ""
     complete: bool = False
     extended_stocks: list[Quote] = field(default_factory=list)
+    event: CalendarEvent | None = None
 
     @property
     def title(self) -> str:

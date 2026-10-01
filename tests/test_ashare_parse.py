@@ -240,12 +240,12 @@ class RenderTests(unittest.TestCase):
                 copy = social_copy(brief)
                 self.assertIn("不构成投资建议", copy)
                 if kind == "close":
-                    self.assertIn("A股收盘综述｜9月30日 周三", copy)
+                    self.assertIn("A股收盘精选｜2026年9月30日 星期三", copy)
                     self.assertNotIn("盘后要闻", copy)
                 else:
-                    self.assertIn("A股早盘｜10月8日 周四", copy)
-                    self.assertIn("9月30日情绪", copy)
-                    self.assertIn("下个交易日关注", copy)
+                    self.assertIn("A股早盘精选｜2026年10月8日 星期四", copy)
+                    self.assertIn("A股参考9月30日收盘", copy)
+                    self.assertIn("下次交易10月8日", copy)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+from common.events import load_next_event
+
 from .calendar import edition_date
 from .compose import build_brief
 from .data import load_market
@@ -26,10 +28,14 @@ def main(argv: list[str] | None = None) -> None:
         except ValueError as exc:
             parser.error(str(exc))
     data = load_market()
+    now = datetime.now(CST)
     try:
         briefs = [build_brief(kind, data, now=now) for kind in kinds]
     except ValueError as exc:
         parser.error(str(exc))
+    event = load_next_event(now)
+    for brief in briefs:
+        brief.event = event
     output = Path(args.output)
     for brief in briefs:
         stem = output / f"{brief.kind}-{brief.edition_date.isoformat()}"

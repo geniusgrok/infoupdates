@@ -4,6 +4,8 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+from common.events import load_next_event
+
 from .calendar import edition_date, last_completed_session
 from .compose import build_brief
 from .data import load_market
@@ -34,6 +36,9 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
+    event = load_next_event(now)
+    for brief in briefs:
+        brief.event = event
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     for brief in briefs:

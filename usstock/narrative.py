@@ -151,6 +151,52 @@ def fresh_futures(quotes: list[Quote], now: datetime, target: date) -> list[Quot
             and 0 <= now.timestamp() - new_york_time(quote.asof).timestamp() <= 6 * 3600]
 
 
+def available_quotes(quotes: list[Quote]) -> dict[str, Quote]:
+    return {quote.symbol: quote for quote in quotes if isfinite(quote.last) and quote.last > 0}
+
+
+def current_quotes(quotes: list[Quote], brief: Brief) -> dict[str, Quote]:
+    available = available_quotes(quotes)
+    if brief.kind == "premarket":
+        return {symbol: quote for symbol, quote in available.items()
+                if quote.session in {"overnight", "premarket", "postmarket"} and (quote.asof is not None or quote.is_snapshot)}
+    return available
+
+
+def afterhours_quotes(brief: Brief) -> dict[str, Quote]:
+    if brief.kind != "postmarket":
+        return {}
+    return {symbol: quote for symbol, quote in available_quotes(brief.extended_stocks).items()
+            if quote.session == "postmarket" and quote.trade_date == brief.edition_date
+            and quote.asof is not None and new_york_time(quote.asof) <= new_york_time(brief.generated_at)}
+
+
+def selected_stocks(brief: Brief) -> list[Quote]:
+    """图片与文案共同选取消息相关、当期波动较大的三家公司。"""
+    quotes = list(current_quotes(brief.stocks, brief).values())
+    news = " ".join(item.title.lower() for item in brief.news
+                    if new_york_time(item.published) <= new_york_time(brief.generated_at))
+    after = afterhours_quotes(brief)
+
+    def priority(quote: Quote) -> tuple[bool, float]:
+        mentioned = bool(re.search(rf"\b{re.escape(quote.symbol.lower())}\b", news)) or quote.name.lower() in news
+        changes = [item.pct for item in (quote, after.get(quote.symbol))
+                   if item is not None and item.pct is not None and isfinite(item.pct)]
+        return mentioned, round(max((abs(value) for value in changes), default=0), 6)
+
+    return sorted(quotes, key=priority, reverse=True)[:3]
+
+
+def sector_leaders(brief: Brief) -> tuple[list[Quote], list[Quote]]:
+    values = [quote for quote in current_quotes(brief.sectors, brief).values()
+              if quote.pct is not None and isfinite(quote.pct)]
+    ordered = sorted(values, key=lambda quote: quote.pct, reverse=True)
+    strongest = ordered[:2]
+    symbols = {quote.symbol for quote in strongest}
+    weakest = [quote for quote in reversed(ordered) if quote.symbol not in symbols][:2]
+    return strongest, weakest
+
+
 def build_narrative(brief: Brief) -> tuple[str, str, str]:
     core = [quote for quote in brief.indices if quote.symbol in {"^DJI", "^IXIC", "^GSPC"}]
     if brief.kind == "premarket":
