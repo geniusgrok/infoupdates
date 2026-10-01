@@ -1,0 +1,103 @@
+name: Market briefs
+
+on:
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: Generate
+        type: choice
+        default: all
+        options: [all, ashare, usstock, weekly]
+  schedule:
+    - cron: '0 0 * * 1-5'
+    - cron: '30 7 * * 1-5'
+    - cron: '0 12,13 * * 1-5'
+    - cron: '30 20,21 * * 1-5'
+    - cron: '15 2 * * 6'
+
+concurrency:
+  group: market-archive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  generate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Restore complete archive
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p archive
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=market-archive&per_page=100" > /tmp/archive-artifacts.json
+          BRIEF_ARTIFACT_ID=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          artifacts = json.loads(Path('/tmp/archive-artifacts.json').read_text())['artifacts']
+          usable = [a for a in artifacts if a['name'] == 'market-archive' and not a['expired']
+                    and a.get('workflow_run', {}).get('head_branch') == 'main']
+          print(max(usable, key=lambda a: a['created_at'])['id'] if usable else '')
+          PY
+          )
+          if [ -n "$BRIEF_ARTIFACT_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BRIEF_ARTIFACT_ID/zip" > /tmp/market-archive.zip
+            unzip -q /tmp/market-archive.zip -d archive
+            test -f archive/market.sqlite3
+          fi
+      - name: Generate selected editions
+        env:
+          BRIEF_REQUEST: ${{ inputs.edition }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          from ashare.__main__ import main as ashare
+          from ashare.calendar import is_trading_day as a_trading
+          from ashare.models import CST
+          from usstock.__main__ import main as usstock
+          from usstock.calendar import is_trading_day as u_trading
+          from usstock.models import NY
+          from weekly.__main__ import main as weekly
+          from review.__main__ import main as review
+
+          request = os.environ.get('BRIEF_REQUEST', '')
+          now = datetime.now(timezone.utc)
+          cn, us = now.astimezone(CST), now.astimezone(NY)
+          if request in ('all', 'ashare'):
+              ashare(['all'])
+          if request in ('all', 'usstock'):
+              usstock(['all'])
+          if request == 'weekly':
+              weekly(['--backfill'])
+          if not request:
+              if a_trading(cn.date()) and cn.hour == 8:
+                  ashare(['morning'])
+              if a_trading(cn.date()) and cn.hour == 15:
+                  ashare(['close'])
+              if u_trading(us.date()) and us.hour == 8:
+                  usstock(['premarket'])
+              if u_trading(us.date()) and us.hour == 16:
+                  usstock(['postmarket'])
+              if cn.weekday() == 5 and cn.hour == 10:
+                  weekly(['--backfill'])
+          review(['history'])
+          PY
+      - name: Save complete archive, including partial-run data
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-archive
+          path: archive/
+          retention-days: 90
+          if-no-files-found: error

@@ -4,6 +4,7 @@ import json
 import math
 import unittest
 from datetime import date, datetime, timezone
+from dataclasses import replace
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -246,7 +247,7 @@ class IndexDateFallbackTests(unittest.TestCase):
         secondary = self.quotes('2026-09-30')[:2] + [primary[-1]]
         (indices, note), backup = self.load(primary, secondary, datetime(2026, 9, 30, 10, tzinfo=CST))
         backup.assert_called_once_with()
-        self.assertEqual(indices, secondary[:2])
+        self.assertEqual(indices, [replace(quote, source="腾讯") for quote in secondary[:2]])
         self.assertEqual({quote.trade_day for quote in indices}, {'2026-09-30'})
         self.assertIn('腾讯', note)
 
@@ -254,7 +255,7 @@ class IndexDateFallbackTests(unittest.TestCase):
         primary = self.quotes('2026-09-29')
         (indices, note), backup = self.load(primary, self.quotes('2026-09-29'), datetime(2026, 9, 30, 10, tzinfo=CST))
         backup.assert_called_once_with()
-        self.assertEqual(indices, primary)
+        self.assertEqual(indices, [replace(quote, source="新浪") for quote in primary])
         self.assertIn('行情仅到2026-09-29', note)
 
     def test_future_primary_uses_legal_secondary_and_future_secondary_cannot_replace_old_day(self) -> None:
@@ -276,7 +277,7 @@ class IndexDateFallbackTests(unittest.TestCase):
                 primary = self.quotes(day)
                 (indices, note), backup = self.load(primary, [], now)
                 backup.assert_not_called()
-                self.assertEqual(indices, primary)
+                self.assertEqual(indices, [replace(quote, source="新浪") for quote in primary])
                 self.assertIsNone(note)
 
     def test_open_boundary_uses_china_clock_and_refreshes_previous_day(self) -> None:
@@ -289,14 +290,14 @@ class IndexDateFallbackTests(unittest.TestCase):
         primary = self.quotes('2026-12-31')
         (indices, note), backup = self.load(primary, [], datetime(2027, 1, 4, 10, tzinfo=CST))
         backup.assert_not_called()
-        self.assertEqual(indices, primary)
+        self.assertEqual(indices, [replace(quote, source="新浪") for quote in primary])
         self.assertNotIn('行情仅到', note or '')
 
     def test_holiday_source_date_cannot_replace_legal_previous_session(self) -> None:
         primary = self.quotes('2026-09-30')
         (indices, note), backup = self.load(primary, self.quotes('2026-10-01'), datetime(2026, 10, 8, 10, tzinfo=CST))
         backup.assert_called_once_with()
-        self.assertEqual(indices, primary)
+        self.assertEqual(indices, [replace(quote, source="新浪") for quote in primary])
         self.assertIn('行情仅到2026-09-30', note)
 
 

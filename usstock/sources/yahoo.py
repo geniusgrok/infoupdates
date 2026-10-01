@@ -210,6 +210,28 @@ def parse_completed(
     )
 
 
+def parse_history(payload: object, symbol: str, name: str, *, now: datetime) -> dict[date, Quote]:
+    """补录日线保留真实采集时钟，以后续日线或供应商时点确认已闭市。"""
+    now = new_york_time(now)
+    result = chart_result(payload, symbol)
+    if result is None or symbol.endswith("=F") or symbol == "DX-Y.NYB":
+        return {}
+    bars = _bars(result, now)
+    history = {}
+    for bar in bars:
+        if not _known_trading_day(bar.at.date()) or not _bar_completed(bar, bars, result, now):
+            continue
+        previous = _prior_bar(bars, bar.at.date())
+        reference = previous.close if previous else None
+        history[bar.at.date()] = Quote(
+            symbol, name, bar.close, (bar.close / reference - 1) * 100 if reference else None,
+            reference, session_close(bar.at.date()), volume=bar.volume,
+            previous_volume=previous.volume if previous else None,
+            previous_date=previous.at.date() if previous else None, unit=_unit(symbol),
+        )
+    return history
+
+
 def _extended_reference(
     result: dict, bars: list[_Bar], selected: _Bar, session: str, now: datetime,
     daily_payload: object | None, symbol: str,

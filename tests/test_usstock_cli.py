@@ -28,7 +28,7 @@ class UsCliTests(unittest.TestCase):
             return path
 
         stdout = io.StringIO()
-        with patch.object(cli, "datetime") as clock, \
+        with tempfile.TemporaryDirectory() as archive_folder, patch.object(cli, "datetime") as clock, \
                 patch.object(cli, "load_market", return_value=data) as load, \
                 patch.object(cli, "load_next_event", return_value=event) as event_load, \
                 patch.object(cli, "build_brief", side_effect=build) as compose, \
@@ -36,7 +36,7 @@ class UsCliTests(unittest.TestCase):
                 patch.object(cli, "social_copy", side_effect=lambda b: f"{b.title} {b.edition_date}") as copy, \
                 redirect_stdout(stdout):
             clock.now.return_value = now
-            cli.main([*args, "--output", str(output)])
+            cli.main([*args, "--output", str(output), "--archive", archive_folder])
         event_load.assert_called_once_with(now)
         return stdout.getvalue(), load, compose, render, copy
 
@@ -150,7 +150,8 @@ class UsCliTests(unittest.TestCase):
                 redirect_stderr(stderr):
             clock.now.return_value = datetime(2026, 10, 1, 17, tzinfo=NY)
             with self.assertRaises(SystemExit) as error:
-                cli.main(["all"])
+                with tempfile.TemporaryDirectory() as folder:
+                    cli.main(["all", "--archive", folder])
         self.assertEqual(error.exception.code, 2)
         self.assertIn("不支持的行情交易日期", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())

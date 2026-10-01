@@ -25,13 +25,13 @@ class CalendarEvent:
     source: str
 
 
-def next_event(calendar: str, now: datetime) -> CalendarEvent | None:
-    """从官方日历选择未来 72 小时内、时间明确的重要发布。"""
+def upcoming_events(calendar: str, now: datetime, *, days: int = 3) -> list[CalendarEvent]:
+    """保留官方日历的明确时区；日报看三天，周报看下一周。"""
     if now.utcoffset() is None:
         raise ValueError("event selection requires an aware clock")
     now = now.astimezone(timezone.utc)
     if "BEGIN:VCALENDAR" not in calendar or "END:VCALENDAR" not in calendar:
-        return None
+        return []
     text = re.sub(r"\r?\n[ \t]", "", calendar)
     events: list[CalendarEvent] = []
     for block in re.findall(r"BEGIN:VEVENT\s*\n(.*?)END:VEVENT", text, re.S):
@@ -50,14 +50,22 @@ def next_event(calendar: str, now: datetime) -> CalendarEvent | None:
                 at = datetime.strptime(value, pattern).replace(tzinfo=tz)
             except ValueError:
                 continue
-            if now < at <= now + timedelta(hours=72):
+            if now < at <= now + timedelta(days=days):
                 events.append(CalendarEvent(title, at, "美国劳工统计局"))
-    return min(events, key=lambda event: event.at) if events else None
+    return sorted(set(events), key=lambda event: event.at)
+
+
+def next_event(calendar: str, now: datetime) -> CalendarEvent | None:
+    return next(iter(upcoming_events(calendar, now)), None)
+
+
+def load_events(now: datetime, *, days: int = 3) -> list[CalendarEvent]:
+    try:
+        calendar = fetch_text(URL, "https://www.bls.gov/schedule/", timeout=4, retries=0)
+        return upcoming_events(calendar, now, days=days)
+    except (OSError, TimeoutError, ValueError):
+        return []
 
 
 def load_next_event(now: datetime) -> CalendarEvent | None:
-    try:
-        calendar = fetch_text(URL, "https://www.bls.gov/schedule/", timeout=4, retries=0)
-        return next_event(calendar, now)
-    except (OSError, TimeoutError, ValueError):
-        return None
+    return next(iter(load_events(now)), None)

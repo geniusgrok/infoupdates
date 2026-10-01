@@ -30,13 +30,13 @@ class CliTests(unittest.TestCase):
             return path
 
         stdout = io.StringIO()
-        with patch.object(cli, "datetime") as clock, \
+        with tempfile.TemporaryDirectory() as archive_folder, patch.object(cli, "datetime") as clock, \
                 patch.object(cli, "load_market", return_value=market(day)) as load, \
                 patch.object(cli, "load_next_event", return_value=event) as event_load, \
                 patch.object(cli, "render_png", side_effect=save_image) as render, \
                 redirect_stdout(stdout):
             clock.now.return_value = now
-            cli.main([session, "--output", str(output)])
+            cli.main([session, "--output", str(output), "--archive", archive_folder])
         event_load.assert_called_once_with(now)
         return stdout.getvalue(), load, render
 
@@ -136,7 +136,8 @@ class CliTests(unittest.TestCase):
                 redirect_stderr(stderr):
             clock.now.return_value = datetime(2026, 9, 30, 20, tzinfo=CST)
             with self.assertRaises(SystemExit) as error:
-                cli.main(["all"])
+                with tempfile.TemporaryDirectory() as folder:
+                    cli.main(["all", "--archive", folder])
         self.assertEqual(error.exception.code, 2)
         self.assertIn("交易日历需要更新", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from usstock.sources.yahoo import _fetch_chart, load
 from usstock.models import NY, Quote
-from usstock.sources.yahoo import parse_completed, parse_extended, parse_overnight, parse_quote
+from usstock.sources.yahoo import parse_completed, parse_extended, parse_history, parse_overnight, parse_quote
 
 
 def stamp(day: str, clock: str = "09:30") -> int:
@@ -48,6 +48,16 @@ def night_html(*prices, status=200):
 
 
 class DailyParsingTests(unittest.TestCase):
+    def test_history_uses_real_capture_time_and_excludes_unfinished_bar(self):
+        payload = chart(timestamps=[stamp("2026-09-21"), stamp("2026-09-22")], closes=[100, 110],
+                        asof=stamp("2026-09-30", "16:00"))
+        history = parse_history(payload, "AAPL", "苹果", now=NOW)
+        self.assertEqual(set(history), {date(2026, 9, 21), date(2026, 9, 22)})
+        self.assertEqual(history[date(2026, 9, 22)].asof.hour, 16)
+        self.assertAlmostEqual(history[date(2026, 9, 22)].pct, 10)
+        intraday = parse_history(payload, "AAPL", "苹果", now=datetime(2026, 9, 22, 12, tzinfo=NY))
+        self.assertNotIn(date(2026, 9, 22), intraday)
+
     def test_previous_close_is_previous_daily_bar_not_chart_range_start(self):
         value = parse_quote(chart(), "AAPL", "苹果", now=NOW)
         self.assertEqual(value.previous_close, 100)

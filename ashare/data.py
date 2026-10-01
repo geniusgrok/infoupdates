@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date, datetime, time
 
 from . import sources
@@ -36,7 +37,7 @@ def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
         except ValueError:
             return False
 
-    primary = [quote for quote in (sources.optional("新浪指数", sources.sina_indices) or []) if usable(quote)]
+    primary = [replace(quote, source="新浪") for quote in (sources.optional("新浪指数", sources.sina_indices) or []) if usable(quote)]
     secondary: list[Quote] = []
     hero = next((quote for quote in primary if quote.name == "上证指数"), None)
     trade_day = hero.trade_day if hero else ""
@@ -44,7 +45,7 @@ def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
         primary = [quote for quote in primary if quote.trade_day == trade_day]
     names = {quote.name for quote in primary}
     if not trade_day or any(name not in names for name in INDEX_ORDER) or (expected and trade_day < expected.isoformat()):
-        secondary = [quote for quote in (sources.optional("腾讯指数", sources.tencent_indices) or []) if usable(quote)]
+        secondary = [replace(quote, source="腾讯") for quote in (sources.optional("腾讯指数", sources.tencent_indices) or []) if usable(quote)]
         hero = next((quote for quote in secondary if quote.name == "上证指数"), None)
         if hero and (not trade_day or hero.trade_day > trade_day):
             trade_day = hero.trade_day
@@ -61,6 +62,8 @@ def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
 def load_overseas() -> tuple[list[Quote], list[Quote], str | None]:
     primary = sources.optional("新浪外盘", sources.sina_overseas)
     overseas, fx = primary if primary else ([], [])
+    overseas = [replace(quote, source="新浪") for quote in overseas]
+    fx = [replace(quote, source="新浪") for quote in fx]
     tencent_overseas: list[Quote] = []
     tencent_fx: list[Quote] = []
     have = {quote.name for quote in overseas}
@@ -69,6 +72,8 @@ def load_overseas() -> tuple[list[Quote], list[Quote], str | None]:
         found = sources.optional("腾讯外盘", sources.tencent_overseas)
         if found:
             tencent_overseas, tencent_fx = found
+            tencent_overseas = [replace(quote, source="腾讯") for quote in tencent_overseas]
+            tencent_fx = [replace(quote, source="腾讯") for quote in tencent_fx]
     merged, status = combine_quotes(overseas, tencent_overseas, OVERSEAS_ORDER)
     fx_merged, fx_status = combine_quotes(fx, tencent_fx, ("在岸人民币", "离岸人民币"))
     note = _note_for(status, "外盘改用腾讯行情", "")

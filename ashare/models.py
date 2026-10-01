@@ -39,6 +39,7 @@ class Quote:
     amount: float | None = None
     session: str = ""
     trade_day: str = ""
+    source: str = ""
 
 
 @dataclass

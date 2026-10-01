@@ -24,7 +24,7 @@ class FocusItem:
     stamp: str
 
 
-def _context(title: str) -> str:
+def event_context(title: str) -> str:
     if any(word in title for word in ("非农", "就业", "失业", "Employment", "JOLTS")):
         return "关注就业数据对利率预期的影响。"
     if any(word in title for word in ("CPI", "PCE", "PPI", "通胀", "物价", "Consumer Price", "Producer Price")):
@@ -81,7 +81,7 @@ def build_focus(
         published = published.astimezone(display_zone)
         stamp = published.strftime("%m-%d %H:%M")
         zone_label = "CST" if market == "ashare" else published.strftime("%Z")
-        result.append(FocusItem("关键消息", _headline(item.title), _context(item.title),
+        result.append(FocusItem("关键消息", _headline(item.title), event_context(item.title),
                                 f"{stamp} {zone_label} · {item.source}"))
     else:
         result.append(FocusItem("关键消息", "暂无可核实的重要消息", "等待公开信息更新。", ""))
@@ -89,7 +89,7 @@ def build_focus(
         at = event.at.astimezone(display_zone)
         stamp = at.strftime("%m-%d %H:%M")
         zone_label = "CST" if market == "ashare" else at.strftime("%Z")
-        result.append(FocusItem("下一事件", event.title, _context(event.title),
+        result.append(FocusItem("下一事件", event.title, event_context(event.title),
                                 f"计划 {stamp} {zone_label} · {event.source}"))
     else:
         result.append(FocusItem("继续观察", watch or "观察领涨方向能否扩散，量能能否配合。",
