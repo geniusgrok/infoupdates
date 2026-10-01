@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .news import NewsItem
+from .news import NewsItem, news_key
 
 if TYPE_CHECKING:
     from .events import CalendarEvent
@@ -25,6 +25,8 @@ class FocusItem:
 
 
 def event_context(title: str) -> str:
+    if "FOMC" in title:
+        return "关注政策声明、利率指引及美债收益率的反应。"
     if any(word in title for word in ("非农", "就业", "失业", "Employment", "JOLTS")):
         return "关注就业数据对利率预期的影响。"
     if any(word in title for word in ("CPI", "PCE", "PPI", "通胀", "物价", "Consumer Price", "Producer Price")):
@@ -63,6 +65,19 @@ def _headline(title: str) -> str:
     return first if len(first) >= 8 else value
 
 
+def select_focus_news(news: list[NewsItem], now: datetime) -> NewsItem | None:
+    candidates = [item for item in news if item.title.strip()
+                  and (item.published.replace(tzinfo=CST) if item.published.tzinfo is None else item.published) <= now]
+    return max(candidates, key=_priority, default=None)
+
+
+def deprioritize_seen_news(news: list[NewsItem], previous_title: str) -> list[NewsItem]:
+    """上一份简报已展示的消息降权；新数字、新文字仍按新消息处理。"""
+    previous = news_key(previous_title)
+    return [replace(item, rank=item.rank - 50) if previous and news_key(item.title) == previous else item
+            for item in news]
+
+
 def build_focus(
     news: list[NewsItem], now: datetime, *, market: str,
     watch: str = "", event: CalendarEvent | None = None,
@@ -72,11 +87,9 @@ def build_focus(
         raise ValueError("market 必须是 ashare 或 usstock")
     display_zone = CST if market == "ashare" else NY
     now = now.replace(tzinfo=display_zone) if now.tzinfo is None else now
-    candidates = [item for item in news if item.title.strip()
-                  and (item.published.replace(tzinfo=CST) if item.published.tzinfo is None else item.published) <= now]
+    item = select_focus_news(news, now)
     result: list[FocusItem] = []
-    if candidates:
-        item = max(candidates, key=_priority)
+    if item is not None:
         published = item.published.replace(tzinfo=CST) if item.published.tzinfo is None else item.published
         published = published.astimezone(display_zone)
         stamp = published.strftime("%m-%d %H:%M")

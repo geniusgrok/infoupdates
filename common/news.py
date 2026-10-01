@@ -23,6 +23,11 @@ class NewsItem:
     rank: float = 0
 
 
+def news_key(title: str) -> str:
+    # 仅忽略排版差异；保留数字、小数、正负号和百分号。
+    return re.sub(r'[\s，,。；;：:！？!?、“”"\'（）()\[\]]', '', title).lower()
+
+
 def _clean(text: str) -> str:
     if not isinstance(text, str):
         return ""

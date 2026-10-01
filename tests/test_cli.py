@@ -10,6 +10,8 @@ from unittest.mock import patch
 from ashare import __main__ as ashare
 from ashare.models import CST, MarketData as AData, Quote as AQuote
 from common.archive import Archive
+from common.editorial import select_focus_news
+from common.news import NewsItem
 from usstock import __main__ as usstock
 from usstock.models import NY, MarketData as UData, Quote as UQuote
 from weekly import __main__ as weekly
@@ -79,3 +81,34 @@ class CliTests(unittest.TestCase):
                 list(pool.map(lambda _: ashare.main(args), range(3)))
             loader.assert_called_once()
             render.assert_called_once()
+
+    def test_both_markets_deprioritize_previous_focus_without_changing_raw_capture(self):
+        now = datetime(2026, 9, 30, 18, tzinfo=NY)
+        news = [NewsItem(now, '美联储公布最新政策展望', '见闻'),
+                NewsItem(now, '美国CPI通胀数据同比上涨2.5%', '见闻')]
+        a = AData([AQuote('sh000001', '上证指数', 3000, trade_day='2026-09-30', session='15:30:00')], news=news)
+        u = UData(completed={'^GSPC': UQuote('^GSPC', '标普500', 100, asof=now.replace(hour=16))}, news=news)
+        for cli, data, moment in ((ashare, a, now.astimezone(CST)), (usstock, u, now)):
+            with self.subTest(module=cli.__package__), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                stack.enter_context(redirect_stdout(io.StringIO()))
+                clock = stack.enter_context(patch.object(cli, 'datetime', wraps=datetime))
+                clock.now.return_value = moment
+                stack.enter_context(patch.object(cli, 'load_market', return_value=data))
+                stack.enter_context(patch.object(cli, 'load_next_event', return_value=None))
+                stack.enter_context(patch.object(cli, 'collect_releases'))
+                chosen = []
+                def render(brief, path):
+                    chosen.append(select_focus_news(brief.news, brief.generated_at).title)
+                    self.render(brief, path)
+                stack.enter_context(patch.object(cli, 'render_png', side_effect=render))
+                cli.main(['--archive', str(Path(folder) / 'archive'), '--output', str(Path(folder) / 'output')])
+                self.assertEqual(len(chosen), 2)
+                self.assertNotEqual(chosen[0], chosen[1])
+                archive = Archive(Path(folder) / 'archive')
+                self.assertTrue(all(item['rank'] == 0 for item in archive.snapshots()[0]['data']['news']))
+                for report in archive.reports():
+                    items = [NewsItem(**(item | {'published': datetime.fromisoformat(item['published'])}))
+                             for item in report['data']['news']]
+                    title = select_focus_news(items, moment).title
+                    text = (archive.root / report['path'] / 'summary.txt').read_text()
+                    self.assertIn(title, text)

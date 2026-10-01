@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from math import isfinite
 
-from common.news import NewsItem
+from common.news import NewsItem, news_key
 from .calendar import previous_trading_day, session_close, session_open
 from .models import Brief, Quote, new_york_time
 
@@ -21,11 +21,6 @@ def _news_time(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone(timedelta(hours=8)))
     return new_york_time(moment)
-
-
-def _news_key(title: str) -> str:
-    # 保留数字、小数、正负号：上涨0.5%和下跌0.5%绝不能误去重。
-    return re.sub(r'[\s，,。；;：:！？!?、“”"\'（）()\[\]]', '', title).lower()
 
 
 def _roundup_title(title: str) -> bool:
@@ -67,7 +62,7 @@ def select_news(
                 continue
         rank = item.source_score * 10 + sum(weight for word, weight in BOOSTS if word.lower() in title.lower())
         scored = NewsItem(published=published, title=title, source=item.source, source_score=item.source_score, rank=rank)
-        key = _news_key(title)
+        key = news_key(title)
         previous = selected.get(key)
         priority = (published.timestamp(), rank) if kind == "premarket" else (rank, published.timestamp())
         previous_priority = ((previous.published.timestamp(), previous.rank) if kind == "premarket"

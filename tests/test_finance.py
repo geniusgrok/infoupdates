@@ -9,9 +9,11 @@ from ashare.compose import build_brief as a_brief
 from ashare.models import CST, MarketData as AData, Quote as AQuote, TurnoverComparison
 from ashare.narrative import market_summary
 from common.archive import Archive
-from common.events import CalendarEvent
+from common.editorial import deprioritize_seen_news, select_focus_news
+from common.events import BLS_URL, FED_URL, CalendarEvent, fomc_events, load_events
+from common.news import NewsItem
 from review.bls import calculate, collect_releases, values
-from review.events import comparisons, record_metric
+from review.events import comparisons, record_metric, track_events
 from usstock.calendar import session_close
 from usstock.compose import build_brief as u_brief
 from usstock.models import NY, MarketData as UData, Quote as UQuote
@@ -20,6 +22,58 @@ from weekly.compose import build_weekly
 
 
 class FinanceTests(unittest.TestCase):
+    def test_repeat_news_penalty_preserves_new_numbers_and_progress(self):
+        now = datetime(2026, 10, 1, 8, tzinfo=NY)
+        title = '美国CPI同比上涨0.5%'
+        old = NewsItem(now, title, '见闻', rank=40)
+        repeated = NewsItem(now, '美国 CPI 同比上涨0.5%。', '东财', rank=40)
+        fresh = NewsItem(now, '美国非农就业数据正式公布', '见闻', rank=30)
+        items = deprioritize_seen_news([repeated, fresh], title)
+        self.assertEqual(select_focus_news(items, now), fresh)
+        self.assertEqual(repeated.rank, 40)
+        self.assertEqual(select_focus_news(deprioritize_seen_news([old], title), now).title, title)
+        for update in ('美国CPI同比上涨0.6%', '美国CPI同比上涨5%', '美国CPI同比下跌0.5%',
+                       '美国CPI同比上涨+0.5%', '美国CPI同比上涨-0.5%', title + '。核心通胀同步回落'):
+            news = NewsItem(now, update, '见闻', rank=40)
+            self.assertEqual(deprioritize_seen_news([news], title)[0].rank, 40)
+
+    def test_fomc_official_times_dst_and_independent_calendar_failure(self):
+        calendar = json.dumps({'events': [
+            {'title': 'FOMC Meeting', 'month': '2026-10', 'days': '28', 'time': '2:00 p.m.'},
+            {'title': ' FOMC Press Conference', 'month': '2026-10', 'days': '28', 'time': '2:30 p.m.'},
+            {'title': 'FOMC Meeting', 'month': '2026-12', 'days': '9', 'time': '2:00 p.m.'},
+            {'title': 'FOMC Meeting', 'month': '2026-10', 'days': '29', 'time': ''},
+            {'title': 'FOMC Meeting', 'month': '', 'days': '29', 'time': '2:00 p.m.'}]})
+        now = datetime(2026, 10, 27, 8, tzinfo=NY)
+        events = fomc_events('\ufeff' + calendar, now)
+        self.assertEqual([event.title for event in events], ['美联储 FOMC 利率决议', '美联储 FOMC 新闻发布会'])
+        self.assertEqual([event.at.astimezone(timezone.utc).hour for event in events], [18, 18])
+        self.assertEqual(events[1].at.minute, 30)
+        self.assertEqual(fomc_events(calendar, events[0].at), [events[1]])
+        winter = fomc_events(calendar, datetime(2026, 12, 8, 8, tzinfo=NY))
+        self.assertEqual(winter[0].at.astimezone(timezone.utc).hour, 19)
+        with self.assertRaises(ValueError):
+            fomc_events(calendar, now.replace(tzinfo=None))
+        bls = 'BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Consumer Price Index\nDTSTART;TZID=US-Eastern:20261028T083000\nEND:VEVENT\nEND:VCALENDAR'
+        def fetch(url, *args, **kwargs):
+            return calendar if url == FED_URL else bls
+        with patch('common.events.fetch_text', side_effect=fetch):
+            self.assertEqual([event.title for event in load_events(now)], ['美国 CPI 通胀数据', *[event.title for event in events]])
+        for failed in (BLS_URL, FED_URL):
+            def unavailable(url, *args, **kwargs):
+                if url == failed:
+                    raise OSError('来源暂不可用')
+                return fetch(url)
+            with patch('common.events.fetch_text', side_effect=unavailable):
+                self.assertEqual(len(load_events(now)), 2 if failed == BLS_URL else 1)
+        with tempfile.TemporaryDirectory() as folder:
+            archive = Archive(folder)
+            news = [NewsItem(now, '美联储公布 FOMC 会议安排', '见闻'),
+                    NewsItem(now, '美国就业成本指数公布在即', '见闻')]
+            track_events(archive, news, events, now)
+            for event in archive.events():
+                self.assertEqual([item['data']['title'] for item in event['evidence']], [news[0].title])
+
     def test_ashare_turnover_is_yuan_delta_between_adjacent_sessions(self):
         now = datetime(2026, 9, 30, 18, tzinfo=CST)
         data = AData([AQuote('sh000001', '上证指数', 3000, trade_day='2026-09-30', session='15:30:00')])

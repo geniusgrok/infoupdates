@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from common.archive import Archive
+from common.editorial import deprioritize_seen_news
 from common.events import load_next_event
 from common.history import build_history
 from review.bls import collect_releases
@@ -49,6 +50,8 @@ def main(argv: list[str] | None = None) -> None:
                 collect_releases(archive, now)
                 for brief in briefs:
                     brief.event = event
+                    brief.news = deprioritize_seen_news(brief.news, archive.previous_key_news(
+                        "ashare", brief.kind, brief.edition_date, now))
                     stem = output / f"{brief.kind}-{brief.edition_date.isoformat()}"
                     image, text = archive.publish("ashare", brief, capture_id, render_png,
                                                   social_copy(brief), stem, force=args.force)

@@ -9,8 +9,11 @@ import sqlite3
 import tempfile
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+from .editorial import select_focus_news
+from .news import NewsItem
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS captures (
@@ -241,6 +244,24 @@ class Archive:
         cutoff = utc(through) if through is not None else None
         return [dict(row) | {"data": json.loads(row["data"])} for row in rows
                 if cutoff is None or row["generated_at"] <= cutoff]
+
+    def previous_key_news(self, market: str, session: str, day: date, now: datetime) -> str:
+        """只参考同市场最近96小时内上一份完整简报，强制覆盖排除本版。"""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM reports WHERE market=? AND generated_at BETWEEN ? AND ? "
+                "AND NOT (session=? AND edition_date=?) ORDER BY generated_at DESC, rowid DESC",
+                (market, utc(now - timedelta(hours=96)), utc(now), session, day.isoformat()),
+            ).fetchall()
+        for row in rows:
+            if not self._complete(row):
+                continue
+            data = json.loads(row["data"])
+            news = [NewsItem(**(item | {"published": datetime.fromisoformat(item["published"])}))
+                    for item in data["news"]]
+            item = select_focus_news(news, datetime.fromisoformat(row["generated_at"]))
+            return item.title if item else ""
+        return ""
 
     def add_event(self, event, now: datetime) -> str:
         data = plain(event)

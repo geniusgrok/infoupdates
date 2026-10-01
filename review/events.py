@@ -122,7 +122,9 @@ def track_events(archive: Archive, news: list, events: list, now: datetime) -> N
             continue
         terms = ("非农", "失业率") if "就业与失业率" in event["title"] else (
             "CPI",) if "CPI" in event["title"] else ("PPI",) if "PPI" in event["title"] else (
-            "JOLTS",) if "JOLTS" in event["title"] else ("就业成本",)
+            "JOLTS",) if "JOLTS" in event["title"] else (
+            "FOMC", "美联储", "鲍威尔") if "FOMC 新闻发布会" in event["title"] else (
+            "FOMC", "美联储", "联邦公开市场") if "FOMC" in event["title"] else ("就业成本",)
         for item in news:
             item = plain(item)
             published = datetime.fromisoformat(item["published"])
@@ -130,7 +132,7 @@ def track_events(archive: Archive, news: list, events: list, now: datetime) -> N
                 published = published.replace(tzinfo=CST)
             if not at - timedelta(days=3) <= published <= min(now, at + timedelta(days=2)):
                 continue
-            if not any(term in item["title"] for term in terms):
+            if not any(term.casefold() in item["title"].casefold() for term in terms):
                 continue
             data = {"title": item["title"], "source": item["source"], "url": SOURCE_URLS.get(item["source"], "")}
             archive.add_evidence(event["id"], "report", published, data, now)

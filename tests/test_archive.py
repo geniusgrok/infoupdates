@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 from ashare.compose import build_brief
 from ashare.models import CST, MarketData, Quote
 from common.archive import Archive
+from common.editorial import select_focus_news
 from common.history import build_history
+from common.news import NewsItem
 
 
 class ArchiveTests(unittest.TestCase):
@@ -116,6 +118,21 @@ class ArchiveTests(unittest.TestCase):
         self.publish(render=render)
         render.assert_called_once()
         self.assertFalse(old.exists())
+
+    def test_previous_news_uses_actual_focus_and_excludes_self_future_and_missing(self):
+        self.data.news = [NewsItem(self.now, '央行公布最新货币政策安排', '见闻', rank=40),
+                          NewsItem(self.now, '上市公司发布最新业绩报告', '东财', rank=30)]
+        title = select_focus_news(build_brief('close', self.data, self.now).news, self.now).title
+        self.publish()
+        lookup = self.archive.previous_key_news
+        self.assertEqual(lookup('ashare', 'morning', self.now.date(), self.now), title)
+        self.assertEqual(lookup('ashare', 'close', self.now.date(), self.now), '')
+        self.assertEqual(lookup('usstock', 'premarket', self.now.date(), self.now), '')
+        self.assertEqual(lookup('ashare', 'morning', self.now.date(), self.now - timedelta(seconds=1)), '')
+        self.assertEqual(lookup('ashare', 'morning', self.now.date(), self.now + timedelta(hours=97)), '')
+        folder = self.archive.root / self.archive.reports()[0]['path']
+        (folder / 'image.png').unlink()
+        self.assertEqual(lookup('ashare', 'morning', self.now.date(), self.now), '')
 
     def test_history_escapes_text_and_links_current_result(self):
         self.publish(text='<script>alert(1)</script> & 消息')
