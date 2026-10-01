@@ -7,7 +7,7 @@ from math import isfinite
 from common.editorial import FocusItem, build_focus
 from common.news import NewsItem, news_key
 from .calendar import previous_trading_day, session_close, session_open
-from .models import Brief, Quote, new_york_time
+from .models import SECTOR_NAMES, Brief, Quote, new_york_time
 
 US_TOPICS = (
     "美股", "美国", "美联储", "纳指", "标普", "道指", "道琼斯", "纳斯达克", "华尔街", "美债",
@@ -219,14 +219,15 @@ def structure_view(brief: Brief) -> tuple[str, str]:
             technology = sectors.get("XLK")
             others = [quote.pct for symbol, quote in sectors.items() if symbol != "XLK"]
             if (technology is not None and technology.pct > 0 and technology.pct > max(others)
-                    and sum(value > 0 for value in others) <= len(others) / 2):
-                return "科技ETF领涨，其他板块跟进有限", "观察非科技板块ETF能否转强，科技强势是否扩散。"
+                    and sum(value <= 0 for value in others) > (len(SECTOR_NAMES) - 1) / 2):
+                lead = "科技ETF领涨" if len(sectors) == len(SECTOR_NAMES) else "科技ETF走强"
+                return lead + "，其他板块跟进有限", "观察非科技板块ETF能否转强，科技强势是否扩散。"
             sp = next((quote.pct for quote in quotes if quote.symbol == "^GSPC"), None)
             positive = sum(quote.pct > 0 for quote in sectors.values())
             negative = sum(quote.pct < 0 for quote in sectors.values())
-            if sp is not None and sp > 0 and negative > len(sectors) / 2:
+            if sp is not None and sp > 0 and negative > len(SECTOR_NAMES) / 2:
                 return "标普上涨，多数板块ETF回落", "观察板块ETF上涨范围能否扩大，指数强势是否扩散。"
-            if sp is not None and sp < 0 and positive > len(sectors) / 2:
+            if sp is not None and sp < 0 and positive > len(SECTOR_NAMES) / 2:
                 return "标普回落，多数板块ETF上涨", "观察板块ETF强势能否维持，并带动主要指数企稳。"
     values = {quote.symbol: quote.pct for quote in quotes if quote.pct is not None and isfinite(quote.pct)}
     if growth in values and weight in values:

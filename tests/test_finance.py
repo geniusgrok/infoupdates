@@ -51,6 +51,13 @@ class FinanceTests(unittest.TestCase):
         brief = u_brief('postmarket', UData(completed=indices | sectors), now)
         self.assertEqual(brief.headline, '科技ETF领涨，其他板块跟进有限')
         self.assertIn('非科技板块ETF能否转强', u_focus(brief)[1].title)
+        partial = dict(list(sectors.items())[:8])
+        brief = u_brief('postmarket', UData(completed=indices | partial), now)
+        self.assertEqual(brief.headline, '科技ETF走强，其他板块跟进有限')
+        sample = {symbol: UQuote(symbol, quote.name, 100, -.2 if i < 5 else .2, asof=at)
+                  for i, (symbol, quote) in enumerate(partial.items())}
+        brief = u_brief('postmarket', UData(completed=indices | sample), now)
+        self.assertEqual(brief.headline, '三大指数集体走高')  # 样本5/8下跌，尚不能确定11个板块中多数下跌。
         for selected in (dict(list(sectors.items())[:7]),
                          {symbol: UQuote(symbol, quote.name, 100, quote.pct, asof=at - timedelta(days=1))
                           for symbol, quote in sectors.items()}):
