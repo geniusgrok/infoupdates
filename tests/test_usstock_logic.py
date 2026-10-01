@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
-from brief_common.news import NewsItem
+from common.news import NewsItem
 from usstock.calendar import (
     EARLY_CLOSE_DAYS, extended_close, edition_date, holidays, is_trading_day, last_completed_session,
     next_trading_day, previous_trading_day, session_close,
@@ -470,6 +470,42 @@ class LatestPremarketTests(unittest.TestCase):
         brief = build_brief("premarket", data, now)
         self.assertNotIn("CL=F", [item.symbol for item in brief.references])
 
+    def test_webull_snapshot_uses_observed_clock_and_never_gets_asof(self):
+        basis = date(2026, 9, 30)
+        now = stamp(basis, 23, 30)
+        observed = stamp(basis, 23, 29)
+        raw = Quote("AAPL", "苹果", 102, 2, 100, session="overnight", source="Webull",
+                    observed_at=observed, previous_date=basis, cached=True)
+        brief = build_brief("premarket", MarketData(overnight={"AAPL": raw}), now)
+        self.assertEqual(len(brief.stocks), 1)
+        self.assertIsNone(brief.stocks[0].asof)
+        self.assertIsNone(brief.stocks[0].trade_date)
+        self.assertEqual(brief.stocks[0].observed_at, observed)
+        copy = social_copy(brief)
+        self.assertIn("夜盘快照", copy)
+        self.assertIn("成交时间未披露", copy)
+        self.assertIn("缓存", copy)
+
+    def test_snapshot_outside_window_stale_or_future_stays_missing(self):
+        basis = date(2026, 9, 30)
+        observed = stamp(basis, 23, 29)
+        for now in (stamp(basis, 23, 28), stamp(basis, 23, 35), stamp(date(2026, 10, 1), 4)):
+            with self.subTest(now=now):
+                raw = Quote("AAPL", "苹果", 102, 2, 100, session="overnight", source="Webull",
+                            observed_at=observed, previous_date=basis, cached=True)
+                brief = build_brief("premarket", MarketData(overnight={"AAPL": raw}), now)
+                self.assertEqual(brief.stocks, [])
+
+    def test_snapshot_is_never_a_regular_close_or_wrong_base_percent(self):
+        basis = date(2026, 9, 30)
+        raw = Quote("AAPL", "苹果", 102, 2, 100, session="overnight", source="Webull",
+                    observed_at=stamp(basis, 23, 29), previous_date=date(2026, 9, 29))
+        data = MarketData(overnight={"AAPL": raw}, completed={"AAPL": raw})
+        before = build_brief("premarket", data, stamp(basis, 23, 30))
+        self.assertEqual(before.stocks[0].last, 102)
+        self.assertIsNone(before.stocks[0].pct)
+        self.assertEqual(build_brief("postmarket", data, stamp(basis, 23, 30)).stocks, [])
+
     def test_latest_extended_stocks_can_drive_mood_without_futures(self):
         basis = date(2026, 9, 30)
         target = date(2026, 10, 1)
@@ -493,10 +529,10 @@ class ActivityAndNarrativeTests(unittest.TestCase):
 
     def test_spy_whole_day_volume_has_share_units(self):
         brief = build_brief("postmarket", self.data, stamp(self.today, 18))
-        self.assertIn("SPY放量", brief.market_summary)
+        self.assertIn("SPY股数代理放量", brief.market_summary)
         self.assertIn("增加1000.0万股", brief.market_summary)
         self.assertNotIn("亿元", brief.market_summary)
-        self.assertIn("指数与板块ETF参考", brief.market_summary)
+        self.assertIn("指数/ETF参考", brief.market_summary)
 
     def test_small_volume_change_preserves_nonzero_share_count(self):
         self.data.completed["SPY"].volume = 60_000_100
@@ -513,19 +549,19 @@ class ActivityAndNarrativeTests(unittest.TestCase):
     def test_bad_previous_date_disables_volume_comparison(self):
         self.data.completed["SPY"].previous_date = date(2026, 9, 29)
         brief = build_brief("postmarket", self.data, stamp(self.today, 18))
-        self.assertEqual(activity_summary(brief), "SPY量能待确认")
+        self.assertEqual(activity_summary(brief), "SPY披露日线股数代理待确认")
 
     def test_zero_missing_and_nonfinite_previous_volume_unknown(self):
         for previous in (0, None, float("nan"), -1):
             with self.subTest(previous=previous):
                 self.data.completed["SPY"].previous_volume = previous
                 brief = build_brief("postmarket", self.data, stamp(self.today, 18))
-                self.assertEqual(activity_summary(brief), "SPY量能待确认")
+                self.assertEqual(activity_summary(brief), "SPY披露日线股数代理待确认")
 
     def test_partial_day_premarket_never_claims_shrinkage(self):
         brief = build_brief("premarket", self.data, stamp(date(2026, 10, 2), 8))
         self.assertIn("量能待开盘确认", brief.market_summary)
-        self.assertNotIn("SPY放量", brief.market_summary)
+        self.assertNotIn("SPY披露日线股数代理放量", brief.market_summary)
         self.assertNotIn("缩量", brief.market_summary)
 
     def test_premarket_current_futures_mood_is_labeled_proxy(self):

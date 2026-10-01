@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .calendar import edition_date, last_completed_session
 from .compose import build_brief
-from .fetch import load_market
+from .data import load_market
 from .models import NY
 from .render import render_png
 from .social import social_copy
@@ -27,7 +27,8 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
-    data = load_market(now=now)
+    data = load_market()
+    now = datetime.now(NY)
     try:
         briefs = [build_brief(kind, data, now=now) for kind in kinds]
     except ValueError as exc:

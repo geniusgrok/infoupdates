@@ -4,46 +4,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from math import isfinite
 
-from brief_common.news import NewsItem
+from common.news import NewsItem
 
 CST = timezone(timedelta(hours=8))
-
-# 上交所年度休市通知；调休的周末仍不开市。
-# 2025: https://www.sse.com.cn/disclosure/announcement/general/c/c_20241223_10767108.shtml
-# 2026: https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml
-HOLIDAY_RANGES = {
-    2025: (("01-01", "01-01"), ("01-28", "02-04"), ("04-04", "04-06"),
-           ("05-01", "05-05"), ("05-31", "06-02"), ("10-01", "10-08")),
-    2026: (("01-01", "01-03"), ("02-15", "02-23"), ("04-04", "04-06"),
-           ("05-01", "05-05"), ("06-19", "06-21"), ("09-25", "09-27"), ("10-01", "10-07")),
-}
 
 
 def china_time(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=CST)
     return moment.astimezone(CST)
-
-
-def is_trading_day(day: date) -> bool:
-    if day.year not in HOLIDAY_RANGES:
-        raise ValueError(f"交易日历尚未覆盖{day.year}年，请按交易所公告更新休市安排")
-    month_day = day.strftime("%m-%d")
-    return day.weekday() < 5 and not any(start <= month_day <= end for start, end in HOLIDAY_RANGES[day.year])
-
-
-def next_trading_day(day: date) -> date:
-    day += timedelta(days=1)
-    while not is_trading_day(day):
-        day += timedelta(days=1)
-    return day
-
-
-def previous_trading_day(day: date) -> date:
-    day -= timedelta(days=1)
-    while not is_trading_day(day):
-        day -= timedelta(days=1)
-    return day
 
 
 @dataclass
@@ -134,6 +103,25 @@ class CrossBorder:
 
 
 @dataclass
+class MarketData:
+    indices: list[Quote]
+    overseas: list[Quote] = field(default_factory=list)
+    fx: list[Quote] = field(default_factory=list)
+    sectors_up: list[SectorMove] = field(default_factory=list)
+    sectors_down: list[SectorMove] = field(default_factory=list)
+    capital: list[CapitalMix] = field(default_factory=list)
+    sector_in: list[SectorFlow] = field(default_factory=list)
+    sector_out: list[SectorFlow] = field(default_factory=list)
+    breadth: Breadth | None = None
+    cross: CrossBorder | None = None
+    news: list[NewsItem] = field(default_factory=list)
+    sector_source: str = "新浪行业"
+    flow_source: str = "东财行业"
+    notes: list[str] = field(default_factory=list)
+    turnover_comparison: TurnoverComparison | None = None
+
+
+@dataclass
 class Narrative:
     style: str
     sentiment: str
@@ -146,10 +134,10 @@ class Brief:
     kind: str
     generated_at: datetime
     trade_date: date
+    edition_date: date
     preview: bool
     hero: Quote
     indices: list[Quote]
-    spark: list[float]
     sectors_up: list[SectorMove]
     sectors_down: list[SectorMove]
     capital: list[CapitalMix]
@@ -159,7 +147,6 @@ class Brief:
     cross: CrossBorder | None
     overseas: list[Quote]
     fx: list[Quote]
-    futures: list[Quote]
     news: list[NewsItem]
     narrative: Narrative
     turnover: float | None
@@ -184,16 +171,8 @@ class Brief:
             return self.hero
         return None
 
-    def edition_date(self) -> date:
-        if self.kind != "morning":
-            return self.trade_date
-        now = china_time(self.generated_at)
-        if is_trading_day(now.date()) and now.time() < time(15, 0):
-            return now.date()
-        return next_trading_day(now.date())
-
     def session_label(self) -> str:
-        if self.trade_date == self.edition_date() - timedelta(days=1):
+        if self.trade_date == self.edition_date - timedelta(days=1):
             return "昨日"
         return f"{self.trade_date.month}月{self.trade_date.day}日"
 

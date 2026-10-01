@@ -5,9 +5,9 @@ import unittest
 from datetime import date, datetime
 from unittest.mock import patch
 
-from usstock.fetch import _fetch_chart, load_market
+from usstock.sources.yahoo import _fetch_chart, load
 from usstock.models import NY, Quote
-from usstock.parse import parse_completed, parse_extended, parse_overnight, parse_quote
+from usstock.sources.yahoo import parse_completed, parse_extended, parse_overnight, parse_quote
 
 
 def stamp(day: str, clock: str = "09:30") -> int:
@@ -378,7 +378,7 @@ class OvernightParsingTests(unittest.TestCase):
 class DataLoadingTests(unittest.TestCase):
     def test_chart_query_falls_back_to_second_yahoo_host(self):
         payload = chart("^GSPC")
-        with patch("usstock.fetch.fetch_text", side_effect=[OSError("timeout"), json.dumps(payload)]) as fetch:
+        with patch("usstock.sources.yahoo.fetch_text", side_effect=[OSError("timeout"), json.dumps(payload)]) as fetch:
             self.assertEqual(_fetch_chart("^GSPC"), payload)
         self.assertIn("query1.finance.yahoo.com", fetch.call_args_list[0].args[0])
         self.assertIn("query2.finance.yahoo.com", fetch.call_args_list[1].args[0])
@@ -387,73 +387,28 @@ class DataLoadingTests(unittest.TestCase):
     def test_chart_error_or_wrong_symbol_falls_back(self):
         payload = chart()
         for invalid in ({"chart": {"result": None, "error": {"code": "Not Found"}}}, chart("MSFT")):
-            with patch("usstock.fetch.fetch_text", side_effect=[json.dumps(invalid), json.dumps(payload)]):
+            with patch("usstock.sources.yahoo.fetch_text", side_effect=[json.dumps(invalid), json.dumps(payload)]):
                 self.assertEqual(_fetch_chart("AAPL", extended=True), payload)
 
-    def test_one_symbol_and_news_failure_preserve_all_other_quotes(self):
-        quote = Quote("^GSPC", "标普500", 120, asof=datetime(2026, 9, 30, 16, tzinfo=NY))
-        def daily(symbol, name, now):
-            if symbol == "AAPL":
-                raise OSError("unavailable")
-            self.assertEqual(now, NOW)
-            return chart(symbol), quote, quote
-        with patch.multiple("usstock.fetch", INDEX_NAMES={"^GSPC": "标普500"}, FUTURE_NAMES={},
-                            MEGA_NAMES={"AAPL": "苹果"}, SECTOR_NAMES={}, MACRO_NAMES={}):
-            with patch("usstock.fetch._daily", side_effect=daily), patch("usstock.fetch._extended", return_value=(None, None)), \
-                 patch("usstock.fetch._overnight", return_value=None), \
-                 patch("usstock.fetch.wscn_items", side_effect=OSError("news down")), patch("usstock.fetch.em_items", return_value=[]):
-                result = load_market(now=NOW)
-        self.assertIn("^GSPC", result.quotes)
-        self.assertIn("^GSPC", result.completed)
-        self.assertNotIn("AAPL", result.quotes)
-        self.assertNotIn("AAPL", result.postmarket)
-        self.assertTrue(any("AAPL" in note and "暂缺" in note for note in result.notes))
-        self.assertTrue(any("快讯暂缺" in note for note in result.notes))
-
-    def test_night_quotes_survive_all_daily_extended_and_sibling_night_failures(self):
+    def test_night_quote_survives_same_symbol_daily_and_extended_failures(self):
         now = datetime(2026, 9, 30, 23, 30, tzinfo=NY)
-        def overnight(symbol, name, captured):
-            self.assertEqual(captured, now)
-            if symbol == "XLC":
-                raise OSError("page unavailable")
-            if symbol == "XLB":
-                return None
-            return Quote(symbol, name, 110, pct=10, asof=datetime(2026, 9, 30, 23, tzinfo=NY), session="overnight")
-        with patch.multiple("usstock.fetch", INDEX_NAMES={}, FUTURE_NAMES={}, MEGA_NAMES={"AAPL": "苹果"},
-                            SECTOR_NAMES={"XLK": "科技", "XLB": "材料", "XLC": "通信"}, MACRO_NAMES={}):
-            with patch("usstock.fetch._daily", side_effect=OSError("daily down")), \
-                 patch("usstock.fetch._extended", side_effect=OSError("extended down")), \
-                 patch("usstock.fetch._overnight", side_effect=overnight), \
-                 patch("usstock.fetch.wscn_items", return_value=[]), patch("usstock.fetch.em_items", return_value=[]):
-                result = load_market(now=now)
-        self.assertEqual(set(result.overnight), {"AAPL", "XLK"})
+        night = Quote("AAPL", "苹果", 110, asof=datetime(2026, 9, 30, 23, tzinfo=NY), session="overnight")
+        with patch("usstock.sources.yahoo._daily", side_effect=OSError("daily down")), \
+             patch("usstock.sources.yahoo._extended", side_effect=OSError("extended down")), \
+             patch("usstock.sources.yahoo._overnight", return_value=night):
+            result = load("AAPL", "苹果", now)
+        self.assertEqual(result.overnight, {"AAPL": night})
         self.assertEqual(result.completed, {})
-        self.assertEqual(result.premarket, {})
-        self.assertTrue(any("XLC" in note and "夜盘行情暂缺" in note for note in result.notes))
-        self.assertTrue(any("XLB" in note and "真实夜盘行情暂缺" in note for note in result.notes))
+        self.assertTrue(any("常规行情暂缺" in note for note in result.notes))
+        self.assertTrue(any("延长时段行情暂缺" in note for note in result.notes))
 
-    def test_sector_etf_has_independent_real_pre_post_and_night_data(self):
-        now = datetime(2026, 9, 30, 23, 30, tzinfo=NY)
-        def extended(symbol, name, captured, daily_payload):
-            self.assertEqual(captured, now)
-            if symbol == "AAPL":
-                return None, None
-            return (Quote(symbol, name, 101, asof=datetime(2026, 9, 30, 9, tzinfo=NY), session="premarket"),
-                    Quote(symbol, name, 102, asof=datetime(2026, 9, 30, 19, tzinfo=NY), session="postmarket"))
-        def overnight(symbol, name, captured):
-            if symbol == "AAPL":
-                raise OSError("one page down")
-            return Quote(symbol, name, 103, asof=datetime(2026, 9, 30, 23, tzinfo=NY), session="overnight")
-        with patch.multiple("usstock.fetch", INDEX_NAMES={}, FUTURE_NAMES={}, MEGA_NAMES={"AAPL": "苹果"},
-                            SECTOR_NAMES={"XLF": "金融"}, MACRO_NAMES={}):
-            with patch("usstock.fetch._daily", return_value=({}, None, None)), \
-                 patch("usstock.fetch._extended", side_effect=extended), patch("usstock.fetch._overnight", side_effect=overnight), \
-                 patch("usstock.fetch.wscn_items", return_value=[]), patch("usstock.fetch.em_items", return_value=[]):
-                result = load_market(now=now)
-        self.assertEqual(result.premarket["XLF"].last, 101)
-        self.assertEqual(result.postmarket["XLF"].last, 102)
-        self.assertEqual(result.overnight["XLF"].last, 103)
-        self.assertNotIn("AAPL", result.overnight)
+    def test_provider_live_clock_is_taken_after_response(self):
+        started = datetime(2026, 9, 30, 15, 59, 59, tzinfo=NY)
+        finished = datetime(2026, 9, 30, 16, 0, 2, tzinfo=NY)
+        with patch("usstock.sources.yahoo._fetch_chart", return_value=chart("^GSPC")), \
+             patch("usstock.sources.yahoo.parse_quote", return_value=None) as parse:
+            load("^GSPC", "标普500", started, clock=lambda: finished)
+        self.assertEqual(parse.call_args.kwargs["now"], finished)
 
 
 if __name__ == "__main__":

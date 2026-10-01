@@ -20,28 +20,28 @@ GREEN = (38, 196, 146)
 FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 
 
-def _font_file(weight: str) -> Path:
+def font_path(weight: str) -> Path:
     names = {"regular": "NotoSansSC-Regular.ttf", "medium": "NotoSansSC-Medium.ttf", "bold": "NotoSansSC-Bold.ttf"}
     path = FONT_DIR / names[weight]
     return path if path.exists() else Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc")
 
 
 @lru_cache(maxsize=256)
-def _font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(_font_file(weight)), size)
+def font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(font_path(weight)), size)
 
 
-def _width(value: str, face: ImageFont.FreeTypeFont) -> float:
+def text_width(value: str, face: ImageFont.FreeTypeFont) -> float:
     bounds = face.getbbox(value, anchor="lt")
     return max(face.getlength(value), bounds[2] - bounds[0])
 
 
-def _ellipsize(value: str, face: ImageFont.FreeTypeFont, width: float) -> str:
-    if _width(value, face) <= width:
+def ellipsize(value: str, face: ImageFont.FreeTypeFont, width: float) -> str:
+    if text_width(value, face) <= width:
         return value
-    while value and _width(value + "…", face) > width:
+    while value and text_width(value + "…", face) > width:
         value = value[:-1]
-    return value + "…" if _width("…", face) <= width else ""
+    return value + "…" if text_width("…", face) <= width else ""
 
 
 class Canvas:
@@ -55,14 +55,14 @@ class Canvas:
              min_size: int | None = None) -> tuple[float, float, float, float]:
         if max_width is not None:
             floor = min_size if min_size is not None else size
-            while size > floor and _width(value, _font(size, weight)) > max_width:
+            while size > floor and text_width(value, font(size, weight)) > max_width:
                 size -= 1
-            value = _ellipsize(value, _font(size, weight), max_width)
-        face = _font(size, weight)
+            value = ellipsize(value, font(size, weight), max_width)
+        face = font(size, weight)
         if align == "right":
-            x -= _width(value, face)
+            x -= text_width(value, face)
         elif align == "center":
-            x -= _width(value, face) / 2
+            x -= text_width(value, face) / 2
         bounds = self.draw.textbbox((x, y), value, font=face, anchor="lt")
         self.draw.text((x, y), value, font=face, fill=color, anchor="lt")
         return bounds
@@ -73,11 +73,11 @@ class Canvas:
              weight: str = "regular", gap: int = 12) -> None:
         value_size = value_size or size
         label_size = size
-        while label_size > 22 and _width(label, _font(label_size)) + _width(value, _font(value_size, weight)) + gap > width:
+        while label_size > 22 and text_width(label, font(label_size)) + text_width(value, font(value_size, weight)) + gap > width:
             label_size -= 1
-        while value_size > 22 and _width(value, _font(value_size, weight)) + gap + 22 > width:
+        while value_size > 22 and text_width(value, font(value_size, weight)) + gap + 22 > width:
             value_size -= 1
-        value_width = _width(value, _font(value_size, weight))
+        value_width = text_width(value, font(value_size, weight))
         self.text(x, y + max(0, (value_size - label_size) / 2), label, label_size, label_color,
                   max_width=width - value_width - gap)
         self.text(x + width, y, value, value_size, color, weight, "right", max_width=width)
@@ -86,18 +86,18 @@ class Canvas:
                   size: int, lines: int, color: tuple[int, int, int] = TEXT,
                   weight: str = "regular", pitch: int | None = None) -> None:
         value = re.sub(r"\s+", " ", value).strip()
-        face = _font(size, weight)
+        face = font(size, weight)
         tokens = re.findall(r"[+-]?\d+(?:[.,]\d+)*(?:%|万人|亿元|亿港元|亿|个月)?|[A-Za-z][A-Za-z0-9._/-]*|.", value)
-        tokens = [part for token in tokens for part in (list(token) if _width(token, face) > width else [token])]
+        tokens = [part for token in tokens for part in (list(token) if text_width(token, face) > width else [token])]
         start = 0
         for row in range(lines):
             if start >= len(tokens):
                 break
             end = start
-            while end < len(tokens) and _width("".join(tokens[start:end + 1]), face) <= width:
+            while end < len(tokens) and text_width("".join(tokens[start:end + 1]), face) <= width:
                 end += 1
             if row == lines - 1:
-                line = _ellipsize("".join(tokens[start:]), face, width)
+                line = ellipsize("".join(tokens[start:]), face, width)
             else:
                 line = "".join(tokens[start:end])
             self.text(x, y + row * (pitch or size + 5), line, size, color, weight)
@@ -115,7 +115,7 @@ class Canvas:
         self.text(x + 50, y - 1, label, 36, TEXT, "bold")
 
 
-def _tone(value: float | None):
+def change_color(value: float | None):
     if value is None or not isfinite(value) or abs(value) < 0.005:
         return MUTED
     return RED if value > 0 else GREEN

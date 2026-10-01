@@ -5,12 +5,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from html.parser import HTMLParser
 from math import isfinite
+from typing import Callable
+from urllib.parse import quote as url_quote, urlencode
 
-from .calendar import (
+from common.http import fetch_text
+
+from ..calendar import (
     SUPPORTED_YEARS, edition_date, extended_close, is_trading_day, overnight_window,
     previous_trading_day, session_close, session_open,
 )
-from .models import NY, Quote, new_york_time
+from ..models import NY, Quote, MarketData, MEGA_NAMES, SECTOR_NAMES, new_york_time
 
 
 def finite_number(value: object, *, positive: bool = False) -> float | None:
@@ -348,3 +352,82 @@ def parse_overnight(
             source=source.strip(), unit="USD",
         ))
     return max(candidates, key=lambda item: item.asof) if candidates else None
+
+
+YAHOO = "https://finance.yahoo.com/"
+CHART_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+
+
+def _fetch_chart(symbol: str, *, extended: bool = False) -> dict:
+    params = {"range": "2d" if extended else "5d", "interval": "5m" if extended else "1d"}
+    if extended:
+        params["includePrePost"] = "true"
+    error: Exception | None = None
+    for host in CHART_HOSTS:
+        url = f"https://{host}/v8/finance/chart/{url_quote(symbol, safe='')}?{urlencode(params)}"
+        try:
+            payload = json.loads(fetch_text(url, YAHOO, timeout=10, retries=0))
+            if chart_result(payload, symbol) is None:
+                raise ValueError("行情为空、标的不匹配或接口返回错误")
+            return payload
+        except (OSError, ValueError, RuntimeError) as exc:
+            error = exc
+    raise RuntimeError(f"Yahoo 两个行情入口均不可用：{error}") from error
+
+
+def _daily(symbol: str, name: str, now: datetime, *, clock=None) -> tuple[dict, Quote | None, Quote | None]:
+    payload = _fetch_chart(symbol)
+    now = new_york_time(clock() if clock is not None else now)
+    return (
+        payload,
+        parse_quote(payload, symbol, name, now=now),
+        parse_completed(payload, symbol, name, now=now),
+    )
+
+
+def _extended(symbol: str, name: str, now: datetime, daily_payload: dict | None, *, clock=None) -> tuple[Quote | None, Quote | None]:
+    payload = _fetch_chart(symbol, extended=True)
+    now = new_york_time(clock() if clock is not None else now)
+    return (
+        parse_extended(payload, symbol, name, "premarket", now=now, daily_payload=daily_payload),
+        parse_extended(payload, symbol, name, "postmarket", now=now, daily_payload=daily_payload),
+    )
+
+
+def _overnight(symbol: str, name: str, now: datetime, *, clock=None) -> Quote | None:
+    html = fetch_text(f"{YAHOO}quote/{url_quote(symbol, safe='')}/", YAHOO, timeout=12, retries=0)
+    now = new_york_time(clock() if clock is not None else now)
+    return parse_overnight(html, symbol, name, now=now)
+
+
+
+def load(symbol: str, name: str, now: datetime, *, clock: Callable[[], datetime] | None = None) -> MarketData:
+    """单标的Yahoo适配器，各时段保留同源基准和真实成交时间。"""
+    now = new_york_time(now)
+    result = MarketData()
+    payload = None
+    options = {"clock": clock} if clock is not None else {}
+    try:
+        payload, latest, completed = _daily(symbol, name, now, **options)
+        if latest is not None:
+            result.quotes[symbol] = latest
+        if completed is not None:
+            result.completed[symbol] = completed
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+        result.notes.append(f"Yahoo {symbol} 常规行情暂缺：{exc}")
+    if symbol in MEGA_NAMES or symbol in SECTOR_NAMES:
+        try:
+            premarket, postmarket = _extended(symbol, name, now, payload, **options)
+            if premarket is not None:
+                result.premarket[symbol] = premarket
+            if postmarket is not None:
+                result.postmarket[symbol] = postmarket
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            result.notes.append(f"Yahoo {symbol} 延长时段行情暂缺：{exc}")
+        try:
+            overnight = _overnight(symbol, name, now, **options)
+            if overnight is not None:
+                result.overnight[symbol] = overnight
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            result.notes.append(f"Yahoo {symbol} 夜盘行情暂缺：{exc}")
+    return result

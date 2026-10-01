@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .format import fmt_pct, fmt_px, fmt_yi
+from common.format import fmt_pct, fmt_px, fmt_yi
 from .models import Brief, Narrative, Quote, SectorFlow
 
 

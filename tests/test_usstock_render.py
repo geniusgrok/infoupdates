@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from brief_common.news import NewsItem
+from common.news import NewsItem
 from usstock import render
 from usstock.models import (
     FUTURE_NAMES, INDEX_NAMES, MACRO_NAMES, MEGA_NAMES, NY, SECTOR_NAMES, Brief, Quote,
@@ -44,7 +44,7 @@ def briefing(kind="postmarket"):
 
     def quotes(names, last=150, session="regular", asof=closing):
         return [Quote(symbol, name, last + i * 10, pct=1.23 - i * .4, asof=asof,
-                      session=session, unit="points" if symbol.startswith("^") or symbol.endswith("=F") else "USD")
+                      session=session, source="BOATS Real Time Price" if session == "overnight" else "Yahoo Finance", unit="points" if symbol.startswith("^") or symbol.endswith("=F") else "USD")
                 for i, (symbol, name) in enumerate(names.items())]
 
     indices = quotes(INDEX_NAMES, last=6500)
@@ -119,15 +119,27 @@ class USRenderTests(unittest.TestCase):
                     self.assertIn(name, text)
                 self.assertNotIn("主力净", text)
 
+    def test_snapshot_shows_capture_clock_without_claiming_trade_time(self):
+        brief = briefing("premarket")
+        brief.stocks = [Quote("AAPL", "苹果", 333.9, pct=.26, session="overnight", source="Webull",
+                              observed_at=datetime(2026, 9, 29, 23, 30, tzinfo=NY), cached=True)]
+        canvas = self.draw_brief(brief)
+        text = "\n".join(value for value, _ in canvas.texts)
+        self.assertIn("夜盘快照", text)
+        self.assertIn("采集23:30", text)
+        self.assertIn("成交时间未披露", text)
+        self.assertIn("缓存", text)
+        self.assertIn("Webull", text)
+
     def test_missing_quotes_never_become_zero_or_dollars(self):
         for kind in ("premarket", "postmarket"):
             with self.subTest(kind=kind):
                 canvas = self.draw_brief(Brief(kind, datetime(2026, 9, 30, 8, tzinfo=NY), date(2026, 9, 30)))
                 text = "\n".join(value for value, _ in canvas.texts)
                 if kind == "postmarket":
-                    self.assertIn("SPY成交量待确认", text)
+                    self.assertIn("SPY日线股数待确认", text)
                 else:
-                    self.assertNotIn("SPY成交量", text)
+                    self.assertNotIn("SPY日线股数", text)
                 self.assertIn("时点待确认", text)
                 self.assertNotIn("0股", text)
                 self.assertNotIn("$0", text)
@@ -192,7 +204,7 @@ class USRenderTests(unittest.TestCase):
         self.assertIn("0 / 7家", text)
         self.assertNotIn("前收", text)
         self.assertNotIn("0.00%", text)
-        self.assertNotIn("SPY成交量", text)
+        self.assertNotIn("SPY日线股数", text)
 
     def test_partial_latest_etfs_do_not_repeat_in_both_rankings(self):
         for count in range(1, 5):

@@ -6,22 +6,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ashare.compose import build_brief
-from ashare.fetch import MarketData
-from ashare.format import fmt_amount, fmt_yi, million_to_ccy
+from ashare.models import MarketData
+from common.format import fmt_amount, fmt_yi, million_to_ccy
 from ashare.models import NewsItem, Quote
 from ashare.parse import (
     INDEX_ORDER,
     combine_quotes,
-    parse_cme_future,
     parse_cn_index,
     parse_fenbu,
     parse_fflow_line,
     parse_fx,
     parse_hk_index,
-    parse_qq_capital,
-    parse_qq_fx,
-    parse_qq_quote,
-    parse_qq_spark,
+    parse_tencent_capital,
+    parse_tencent_fx,
+    parse_tencent_quote,
     parse_sina_board_money,
     parse_sina_industries,
     parse_us_index,
@@ -43,7 +41,6 @@ DOW = (
 )
 HSI = "HSI,恒生指数,24393.880,24523.570,24637.650,24332.640,24613.270,89.700,0.370,0.000,0.000,0,0,0,0,0,0,2026/09/30,16:08:50"
 FX = "20:28:00,6.7037000000,6.7047000000,6.7065000000,38,6.7050000000,6.7059000000,6.7021000000,6.7047000000,在岸人民币,-0.0268,-0.0018"
-ES = "7741.550,,7740.250,7740.500,7756.500,7719.500,20:28:56,7732.000,7739.000,0,7,8,2026-09-30,标普500指数期货,0"
 INDUSTRY = (
     '{"new_swzz":"new_swzz,生物制药,155,14.97,0.32,2.1627624631775,1,1,sz300122,6.881,13.980,0.900,智飞生物",'
     '"new_dzqj":"new_dzqj,电子器件,10,1,1,-1.9066573200439,1,1,sz000001,1,1,1,新亚制程",'
@@ -87,7 +84,7 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(quote.amount or 0, 679398992445, places=0)
         self.assertEqual(quote.trade_day, "2026-09-30")
 
-    def test_us_hk_fx_futures(self) -> None:
+    def test_us_hk_fx(self) -> None:
         dow = parse_us_index("gb_dji", DOW, "道琼斯")
         assert dow is not None
         self.assertAlmostEqual(dow.pct or 0, -0.26, places=2)
@@ -100,11 +97,6 @@ class ParseTests(unittest.TestCase):
         assert fx is not None
         self.assertAlmostEqual(fx.last, 6.7047, places=4)
         self.assertEqual(fx.name, "在岸人民币")
-        future = parse_cme_future("hf_ES", ES, "标普500期货")
-        assert future is not None
-        self.assertAlmostEqual(future.last, 7741.55, places=2)
-        self.assertAlmostEqual(future.prev_close or 0, 7739.0, places=2)
-        self.assertGreater(future.pct or 0, 0)
 
     def test_industry_percent_is_not_rescaled(self) -> None:
         leaders, laggards = parse_sina_industries(INDUSTRY, limit=3)
@@ -165,26 +157,25 @@ BOARD_MONEY = (
 
 class FallbackTests(unittest.TestCase):
     def test_tencent_quotes(self) -> None:
-        quote = parse_qq_quote("sh000001", QQ_SH, "上证指数", "cn")
+        quote = parse_tencent_quote("sh000001", QQ_SH, "上证指数", "cn")
         assert quote is not None
         self.assertAlmostEqual(quote.last, 3842.19, places=2)
         self.assertAlmostEqual(quote.pct or 0, 0.31, places=2)
         self.assertEqual(quote.trade_day, "2026-09-30")
         self.assertAlmostEqual(quote.amount or 0, 679398990000, places=-3)
-        dow = parse_qq_quote("gb_dji", QQ_US, "道琼斯", "us")
+        dow = parse_tencent_quote("gb_dji", QQ_US, "道琼斯", "us")
         assert dow is not None
         self.assertAlmostEqual(dow.pct or 0, -0.26, places=2)
         self.assertEqual(dow.session, "09-29 收盘")
-        hsi = parse_qq_quote("rt_hkHSI", QQ_HK, "恒生指数", "hk")
+        hsi = parse_tencent_quote("rt_hkHSI", QQ_HK, "恒生指数", "hk")
         assert hsi is not None
         self.assertAlmostEqual(hsi.last, 24613.27, places=2)
         self.assertIn("09-30", hsi.session)
-        fx = parse_qq_fx("fx_susdcny", QQ_FX, "在岸人民币")
+        fx = parse_tencent_fx("fx_susdcny", QQ_FX, "在岸人民币")
         assert fx is not None
         self.assertAlmostEqual(fx.last, 6.7046, places=4)
         self.assertAlmostEqual(fx.pct or 0, -0.03, places=2)
-        closes = parse_qq_spark({"data": {"sh000001": {"day": [["2026-09-29", "1", "3830.45", "2", "3", "4"], ["2026-09-30", "1", "3842.19", "2", "3", "4"]]}}})
-        self.assertEqual(closes, [3830.45, 3842.19])
+
 
     def test_board_money_and_source_choice(self) -> None:
         leaders, laggards, inflow, outflow = parse_sina_board_money(BOARD_MONEY)
@@ -204,7 +195,7 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(fallback[0].name, "上证指数")
         missing, missing_status = combine_quotes([], [], INDEX_ORDER, required="上证指数")
         self.assertEqual(missing_status, "missing")
-        capital = parse_qq_capital(
+        capital = parse_tencent_capital(
             "沪市",
             {"data": {"todayFundFlow": {"mainNetIn": "-100", "superFlow": "-40", "bigFlow": "-60", "normalFlow": "10", "smallFlow": "90"}}},
         )
@@ -233,12 +224,10 @@ class RenderTests(unittest.TestCase):
             indices=[hero, chi_next, star, sz50],
             overseas=[parse_us_index("gb_dji", DOW, "道琼斯")],
             fx=[parse_fx("fx_susdcny", FX, "在岸人民币")],
-            futures=[parse_cme_future("hf_ES", ES, "标普500期货")],
             news=[
                 NewsItem(now.replace(hour=15), "9月30日收评：A股9月收官，双创指数回落", "见闻", 2),
                 NewsItem(now.replace(hour=9, minute=22), "央行今日开展8335亿元隔夜逆回购操作", "东财", 2),
             ],
-            spark=[3936.5, 3888.4, 3823.6, 3830.5, 3842.2],
         )
         data.breadth = parse_fenbu(FENBU, 52, 9)
         with tempfile.TemporaryDirectory() as folder:

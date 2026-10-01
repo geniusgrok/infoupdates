@@ -4,12 +4,11 @@ import re
 from math import isfinite
 from pathlib import Path
 
-from brief_common.render import (
-    AMBER, BG, CARD, GREEN, HAIR, HEIGHT, LINE, MUTED, RED, TEXT, WIDTH,
-    Canvas, _font, _font_file, _tone, _width,
+from common.render import (
+    AMBER, BG, GREEN, HAIR, LINE, MUTED, RED, TEXT, WIDTH, Canvas, change_color,
 )
 
-from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
+from common.format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, NewsItem, Quote, china_time
 from .narrative import market_summary
 
@@ -69,7 +68,7 @@ def _observations(brief: Brief) -> list[tuple[str, str]]:
 def _close(canvas: Canvas, brief: Brief) -> None:
     pad, right, width = 28, 1052, 1024
     quotes = _quotes(brief)
-    day = brief.edition_date()
+    day = brief.edition_date
     title = "A股盘中快照" if brief.is_intraday else "A股收盘精选"
     canvas.text(pad, 24, "INFOUPDATES", 28, AMBER, "bold")
     canvas.text(right, 27, china_time(brief.generated_at).strftime("生成%m.%d %H:%M CST"), 24, MUTED, align="right")
@@ -84,14 +83,14 @@ def _close(canvas: Canvas, brief: Brief) -> None:
         x = pad + i * (col + 12)
         canvas.card(x, 270, col, 148)
         canvas.text(x + col / 2, 288, name, 33, MUTED, "medium", "center", max_width=col - 24)
-        canvas.text(x + col / 2, 336, _pct(quotes, name), 48 if i == 3 else 44, _tone(_change(quotes, name)), "bold" if i == 3 else "medium", "center", max_width=col - 24, min_size=35)
+        canvas.text(x + col / 2, 336, _pct(quotes, name), 48 if i == 3 else 44, change_color(_change(quotes, name)), "bold" if i == 3 else "medium", "center", max_width=col - 24, min_size=35)
         price = fmt_px(quotes[name].last, 2) if name in quotes else "—"
         canvas.text(x + col / 2, 382, price, 29, TEXT, align="center", max_width=col - 24, min_size=24)
     canvas.card(pad, 432, width, 78)
     for i, name in enumerate(("沪深300", "上证50", "中证500", "中证1000")):
         center = pad + (i + .5) * width / 4
         canvas.text(center, 445, name, 28, MUTED, align="center")
-        canvas.text(center, 478, _pct(quotes, name), 32, _tone(_change(quotes, name)), "medium", "center", max_width=232, min_size=26)
+        canvas.text(center, 478, _pct(quotes, name), 32, change_color(_change(quotes, name)), "medium", "center", max_width=232, min_size=26)
         if i:
             canvas.line(pad + i * width / 4, 446, pad + i * width / 4, 496)
 
@@ -134,7 +133,7 @@ def _close(canvas: Canvas, brief: Brief) -> None:
         for i in range(3):
             row = rows[i] if i < len(rows) else None
             row_y = y + 9 + i * 40
-            canvas.pair(160, row_y, 335, row.name if row else "待确认", fmt_pct(row.pct) if row else "—", 33, color=_tone(row.pct if row else None), weight="medium")
+            canvas.pair(160, row_y, 335, row.name if row else "待确认", fmt_pct(row.pct) if row else "—", 33, color=change_color(row.pct if row else None), weight="medium")
             if i < 2:
                 canvas.line(151, row_y + 36, 497, color=LINE)
     for i, ((title, body), y) in enumerate(zip(_observations(brief), (774, 900, 994))):
@@ -151,7 +150,7 @@ def _close(canvas: Canvas, brief: Brief) -> None:
     canvas.line(421, 1171, 421, 1366, LINE)
     label, net = _funds(brief)
     canvas.text(62, 1173, label, 30, MUTED)
-    canvas.text(62, 1212, fmt_yi(net, signed=True), 61, _tone(net), "bold", max_width=337, min_size=42)
+    canvas.text(62, 1212, fmt_yi(net, signed=True), 61, change_color(net), "bold", max_width=337, min_size=42)
     detail = " / ".join(f"{item.market} {fmt_yi(item.main, signed=True)}" for item in brief.capital) or "沪深资金数据暂缺"
     canvas.text(62, 1281, detail, 24, MUTED, max_width=337, min_size=20)
     cross = brief.cross
@@ -164,7 +163,7 @@ def _close(canvas: Canvas, brief: Brief) -> None:
         for i in range(3):
             row = rows[i] if i < len(rows) else None
             y = 1228 + i * 45
-            canvas.pair(x + 13, y, 259, row.name if row else "待确认", fmt_yi(row.net, signed=True) if row else "—", 30, color=_tone(row.net if row else None))
+            canvas.pair(x + 13, y, 259, row.name if row else "待确认", fmt_yi(row.net, signed=True) if row else "—", 30, color=change_color(row.net if row else None))
             if i < 2:
                 canvas.line(x + 13, y + 37, x + 271)
 
@@ -174,10 +173,10 @@ def _close(canvas: Canvas, brief: Brief) -> None:
     for i, name in enumerate(("道琼斯", "恒生指数", "纳斯达克", "恒生科技", "标普500", "在岸人民币")):
         x, y = (50 if i % 2 == 0 else 574), 1469 + (i // 2) * 31
         value = fmt_px(quotes[name].last, 4) if name == "在岸人民币" and name in quotes else _pct(quotes, name)
-        canvas.pair(x, y, 454, name, value, 28, color=TEXT if name == "在岸人民币" else _tone(_change(quotes, name)), label_color=MUTED)
+        canvas.pair(x, y, 454, name, value, 28, color=TEXT if name == "在岸人民币" else change_color(_change(quotes, name)), label_color=MUTED)
         if i // 2 < 2:
             canvas.line(x, y + 27, x + 454)
-    source = ("数据说明见文案" if brief.notes else "公开行情") + " · 新浪 / 腾讯 / 东财" + (" / 搜狐" if brief.turnover_comparison else "")
+    source = ("数据说明见文案" if brief.notes else "公开行情") + " · 新浪 / 腾讯 / 东财" + (" / 搜狐" if brief.turnover_comparison and brief.turnover_comparison.source == "搜狐" else "")
     canvas.text(pad, 1585, source, 18, MUTED, max_width=570)
     canvas.text(right, 1585, "北向仅列成交额 · 不构成投资建议", 18, MUTED, align="right", max_width=440)
 
@@ -212,7 +211,7 @@ def _macro(item: NewsItem) -> tuple[str, str, str] | None:
 
 def _morning(canvas: Canvas, brief: Brief) -> None:
     pad, right, width, gap = 56, 1024, 968, 20
-    day = brief.edition_date()
+    day = brief.edition_date
     quotes = _quotes(brief)
     canvas.text(pad, 34, "INFOUPDATES", 28, AMBER, "bold")
     canvas.text(right, 34, china_time(brief.generated_at).strftime("生成%m.%d %H:%M CST"), 24, MUTED, align="right")
@@ -230,7 +229,7 @@ def _morning(canvas: Canvas, brief: Brief) -> None:
     for i, name in enumerate(MORNING_ABROAD):
         x, y = pad + (i % 2) * (col + gap), 505 + (i // 2) * 94
         canvas.card(x, y, col, 80)
-        canvas.pair(x + 20, y + 20, col - 40, name, _pct(quotes, name), 40, 48, _tone(_change(quotes, name)), weight="bold")
+        canvas.pair(x + 20, y + 20, col - 40, name, _pct(quotes, name), 40, 48, change_color(_change(quotes, name)), weight="bold")
     canvas.text(pad, 788, market_summary(brief), 24, MUTED, max_width=width, min_size=20)
     canvas.text(pad, 821, "隔夜要闻", 42, TEXT, "bold")
     canvas.text(right, 829, "宏观 / 市场", 28, MUTED, align="right")
@@ -261,7 +260,7 @@ def _morning(canvas: Canvas, brief: Brief) -> None:
         x = pad + i * (col + gap)
         canvas.card(x, 1355, col, 128)
         canvas.text(x + 20, 1376, name, 40, max_width=col - 40, min_size=29)
-        canvas.pair(x + 20, 1430, col - 40, value, label, 44, 26, MUTED, _tone(change), weight="medium", gap=10)
+        canvas.pair(x + 20, 1430, col - 40, value, label, 44, 26, MUTED, change_color(change), weight="medium", gap=10)
     canvas.line(pad, 1510, right, color=AMBER, width=2)
     canvas.text(pad, 1534, f"公开行情 · {brief.trade_date:%Y.%m.%d} A股参考 · 新浪 / 腾讯 / 东财 / 见闻", 26, MUTED, max_width=width, min_size=23)
     status = "数据缺失或备用来源详情见同名文案。" if brief.notes else "公开行情可能延迟。"

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ashare import __main__ as cli
-from ashare.fetch import CST, MarketData
+from ashare.models import CST, MarketData
 from ashare.models import Quote
 
 
@@ -47,7 +47,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("10月8日 周四", copy)
             self.assertIn("morning-2026-10-08.png", text)
             self.assertFalse((output / "morning-2026-09-30.txt").exists())
-            self.assertEqual(render.call_args.args[0].edition_date().isoformat(), "2026-10-08")
+            self.assertEqual(render.call_args.args[0].edition_date.isoformat(), "2026-10-08")
             load.assert_called_once_with()
 
     def test_morning_uses_current_edition_before_close(self) -> None:

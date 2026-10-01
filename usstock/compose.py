@@ -10,19 +10,13 @@ from .calendar import (
 )
 from .models import (
     NY, Brief, Quote, MarketData, INDEX_NAMES, FUTURE_NAMES, MEGA_NAMES,
-    SECTOR_NAMES, MACRO_NAMES, new_york_time,
+    SECTOR_NAMES, MACRO_NAMES, SNAPSHOT_MAX_AGE_SECONDS, clean_quote, new_york_time, quote_clock,
 )
 from .narrative import build_narrative, fresh_futures, select_news
 
 
-def _valid_quote(quote: Quote, now: datetime) -> Quote | None:
-    if not isfinite(quote.last) or quote.last <= 0 or quote.asof is None:
-        return None
-    asof = new_york_time(quote.asof)
-    if asof.timestamp() > now.timestamp():
-        return None
-    pct = quote.pct if quote.pct is not None and isfinite(quote.pct) else None
-    return replace(quote, asof=asof, pct=pct)
+def _valid_quote(quote: Quote, now: datetime, *, allow_snapshot: bool = False) -> Quote | None:
+    return clean_quote(quote, quote.symbol, now, allow_snapshot=allow_snapshot)
 
 
 def _completed_quote(quote: Quote, now: datetime, through: date) -> Quote | None:
@@ -52,7 +46,8 @@ def _postmarket_quote(quote: Quote, now: datetime, reference: date | None) -> Qu
     quote = _valid_quote(quote, now)
     if quote is None or quote.session != "postmarket" or reference is None or quote.trade_date != reference:
         return None
-    if not session_close(reference) <= quote.asof < extended_close(reference):
+    end = extended_close(reference)
+    if not session_close(reference) <= quote.asof or not (quote.asof <= end if quote.source == "Futu" else quote.asof < end):
         return None
     if quote.previous_date != reference or quote.previous_close is None or not isfinite(quote.previous_close) or quote.previous_close <= 0:
         quote = replace(quote, pct=None)
@@ -69,10 +64,12 @@ def _latest_premarket(symbol: str, data: MarketData, now: datetime, target: date
             candidates.append(premarket)
     raw = data.overnight.get(symbol)
     if raw is not None:
-        overnight = _valid_quote(raw, now)
+        overnight = _valid_quote(raw, now, allow_snapshot=True)
         start, end = overnight_window(target)
-        if overnight is not None and overnight.session == "overnight" and start <= overnight.asof < end:
-            candidates.append(overnight)
+        stamp = quote_clock(overnight) if overnight is not None else None
+        if overnight is not None and overnight.session == "overnight" and stamp is not None and start <= stamp < end:
+            if not overnight.is_snapshot or (start <= now < end and 0 <= now.timestamp() - stamp.timestamp() <= SNAPSHOT_MAX_AGE_SECONDS):
+                candidates.append(overnight)
     # 当前盘后可作为明示参考；跨周末、假日的陈旧盘后不补位。
     raw = data.postmarket.get(symbol)
     if raw is not None:
@@ -82,7 +79,7 @@ def _latest_premarket(symbol: str, data: MarketData, now: datetime, target: date
     candidates = [quote for quote in candidates if quote.symbol == symbol]
     if not candidates:
         return None
-    latest = max(candidates, key=lambda quote: quote.asof.timestamp())
+    latest = max(candidates, key=lambda quote: quote_clock(quote).timestamp())
     if (latest.previous_date != basis or latest.previous_close is None
             or not isfinite(latest.previous_close) or latest.previous_close <= 0):
         latest = replace(latest, pct=None)
@@ -192,10 +189,3 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     brief.news = select_news(data.news, kind=kind, reference_date=reference, now=now, limit=6)
     brief.headline, brief.sentiment, brief.market_summary = build_narrative(brief)
     return brief
-
-
-def load_brief(kind: str, now: datetime | None = None) -> Brief:
-    from .fetch import load_market
-
-    now = new_york_time(now or datetime.now(NY))
-    return build_brief(kind, load_market(now=now), now=now)

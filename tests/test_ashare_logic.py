@@ -4,7 +4,7 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 
 from ashare.compose import build_brief
-from ashare.fetch import MarketData
+from ashare.models import MarketData
 from ashare.models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, TurnoverComparison
 from ashare.narrative import market_summary
 from ashare.rank import select_news
@@ -27,30 +27,30 @@ class SessionTests(unittest.TestCase):
     def test_morning_does_not_switch_at_noon(self) -> None:
         now = datetime(2026, 9, 30, 12, 30, tzinfo=CST)
         brief = build_brief("morning", market("2026-09-29"), now)
-        self.assertEqual(brief.edition_date(), date(2026, 9, 30))
+        self.assertEqual(brief.edition_date, date(2026, 9, 30))
         self.assertFalse(brief.preview)
 
     def test_next_morning_skips_national_holiday(self) -> None:
         now = datetime(2026, 9, 30, 20, tzinfo=CST)
         brief = build_brief("morning", market(), now)
-        self.assertEqual(brief.edition_date(), date(2026, 10, 8))
+        self.assertEqual(brief.edition_date, date(2026, 10, 8))
         self.assertEqual(brief.session_label(), "9月30日")
         holiday = build_brief("morning", market(), now.replace(month=10, day=1, hour=8))
-        self.assertEqual(holiday.edition_date(), date(2026, 10, 8))
+        self.assertEqual(holiday.edition_date, date(2026, 10, 8))
         self.assertTrue(holiday.preview)
 
     def test_weekends_and_makeup_workdays_are_not_sessions(self) -> None:
         for day, expected in (("2026-09-18", date(2026, 9, 21)), ("2026-02-14", date(2026, 2, 24))):
             now = datetime.fromisoformat(day + "T20:00:00").replace(tzinfo=CST)
             brief = build_brief("morning", market(day), now)
-            self.assertEqual(brief.edition_date(), expected)
+            self.assertEqual(brief.edition_date, expected)
 
     def test_now_is_normalized_to_china_time(self) -> None:
         now = datetime(2026, 9, 30, 6, 30, tzinfo=timezone.utc)
         brief = build_brief("morning", market("2026-09-29"), now)
         self.assertEqual(brief.generated_at.hour, 14)
         self.assertEqual(brief.generated_at.utcoffset(), timedelta(hours=8))
-        self.assertEqual(brief.edition_date(), date(2026, 9, 30))
+        self.assertEqual(brief.edition_date, date(2026, 9, 30))
 
     def test_intraday_quote_is_not_described_as_close(self) -> None:
         now = datetime(2026, 9, 30, 12, 30, tzinfo=CST)
@@ -62,10 +62,10 @@ class SessionTests(unittest.TestCase):
     def test_unknown_calendar_does_not_block_close(self) -> None:
         now = datetime(2027, 9, 30, 20, tzinfo=CST)
         brief = build_brief("close", market("2027-09-30"), now)
-        self.assertEqual(brief.edition_date(), now.date())
+        self.assertEqual(brief.edition_date, now.date())
         self.assertTrue(any("交易日历" in note for note in brief.notes))
         with self.assertRaisesRegex(ValueError, "交易日历"):
-            build_brief("morning", market("2027-09-30"), now).edition_date()
+            build_brief("morning", market("2027-09-30"), now).edition_date
 
     def test_malformed_date_degrades_without_crash(self) -> None:
         brief = build_brief("close", market("not-a-date"), datetime(2026, 9, 30, 20, tzinfo=CST))

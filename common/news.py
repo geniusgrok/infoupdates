@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 
-from .client import fetch_text
+from .http import fetch_text
 
 CST = timezone(timedelta(hours=8))
 WSCN = "https://wallstreetcn.com/"
@@ -24,6 +24,8 @@ class NewsItem:
 
 
 def _clean(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
     value = html.unescape(text or "")
     value = re.sub(r"<[^>]+>", "", value)
     return re.sub(r"\s+", " ", value).strip()
@@ -49,6 +51,26 @@ def _score(value: object, default: float = 1) -> float:
     return score if isfinite(score) else default
 
 
+def _data(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("新闻响应不是 JSON 对象")
+    data = payload.get("data")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("新闻 data 不是 JSON 对象")
+    return data
+
+
+def _rows(data: dict, field: str) -> list:
+    rows = data.get(field)
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError("新闻列表格式无效")
+    return rows
+
+
 def wscn_items(channel: str, pages: int = 3) -> list[NewsItem]:
     items: list[NewsItem] = []
     cursor = ""
@@ -57,8 +79,8 @@ def wscn_items(channel: str, pages: int = 3) -> list[NewsItem]:
         if cursor:
             url += f"&cursor={cursor}"
         payload = json.loads(fetch_text(url, WSCN))
-        data = payload.get("data") or {}
-        for raw in data.get("items") or []:
+        data = _data(payload)
+        for raw in _rows(data, "items"):
             if not isinstance(raw, dict):
                 continue
             title = _headline(raw.get("title") or "", raw.get("content_text") or raw.get("content") or "")
@@ -89,7 +111,7 @@ def em_items(column: str) -> list[NewsItem]:
     )
     payload = json.loads(fetch_text(url, KUAIXUN))
     items: list[NewsItem] = []
-    for raw in ((payload.get("data") or {}).get("fastNewsList")) or []:
+    for raw in _rows(_data(payload), "fastNewsList"):
         if not isinstance(raw, dict):
             continue
         title = _headline(raw.get("title") or "", raw.get("summary") or "")

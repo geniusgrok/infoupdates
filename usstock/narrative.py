@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from math import isfinite
 
-from brief_common.news import NewsItem
+from common.news import NewsItem
 from .calendar import previous_trading_day, session_close, session_open
 from .models import Brief, Quote, new_york_time
 
@@ -123,14 +123,14 @@ def activity_summary(brief: Brief) -> str:
         return "量能待开盘确认"
     quote = brief.activity
     if quote is None or quote.volume is None or quote.previous_volume is None or quote.trade_date != brief.reference_date:
-        return "SPY量能待确认"
+        return "SPY披露日线股数代理待确认"
     if not isfinite(quote.volume) or not isfinite(quote.previous_volume) or quote.volume < 0 or quote.previous_volume <= 0:
-        return "SPY量能待确认"
+        return "SPY披露日线股数代理待确认"
     try:
         if quote.previous_date != previous_trading_day(brief.reference_date):
-            return "SPY量能待确认"
+            return "SPY披露日线股数代理待确认"
     except (TypeError, ValueError):
-        return "SPY量能待确认"
+        return "SPY披露日线股数代理待确认"
     delta = quote.volume - quote.previous_volume
     ratio = delta / quote.previous_volume
     volume_label = "放量" if ratio > 0.05 else "缩量" if ratio < -0.05 else "基本平量"
@@ -138,7 +138,7 @@ def activity_summary(brief: Brief) -> str:
         change = "成交量与上日基本持平"
     else:
         change = f"成交量较上日{'增加' if delta > 0 else '减少'}{_shares(abs(delta))}"
-    return f"SPY{volume_label}（{change}）"
+    return f"SPY披露日线股数代理{volume_label}（{change}）"
 
 
 def fresh_futures(quotes: list[Quote], now: datetime, target: date) -> list[Quote]:
@@ -170,5 +170,7 @@ def build_narrative(brief: Brief) -> tuple[str, str, str]:
         return headline, sentiment, f"{mood}，{activity_summary(brief)}。"
     headline = _direction_headline(core, "三大指数")
     sentiment = _mood(core, brief.sectors)
-    scope = "市场情绪" if brief.reference_date == brief.edition_date else "参考收盘情绪"
-    return headline, sentiment, f"{scope}{sentiment}（指数与板块ETF参考），{activity_summary(brief)}。"
+    scope = "情绪" if brief.reference_date == brief.edition_date else "参考收盘情绪"
+    activity = activity_summary(brief).replace("SPY披露日线股数代理", "SPY股数代理")
+    activity = activity.replace("（成交量较上日", " · 较上日").replace("（成交量与上日基本持平", " · 与上日持平").removesuffix("）")
+    return headline, sentiment, f"{scope}{sentiment} · 指数/ETF参考 · {activity}"

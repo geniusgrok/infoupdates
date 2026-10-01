@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from common.render import HEIGHT, WIDTH
+
 from ashare import render
 from ashare.compose import build_brief
-from ashare.fetch import MarketData
+from ashare.models import MarketData
 from ashare.models import Breadth, CapitalMix, CrossBorder, CST, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
 
 
@@ -78,8 +80,8 @@ class RenderRegressionTests(unittest.TestCase):
         for value, bounds in canvas.texts:
             self.assertGreaterEqual(bounds[0], 0, value)
             self.assertGreaterEqual(bounds[1], 0, value)
-            self.assertLessEqual(bounds[2], render.WIDTH, value)
-            self.assertLessEqual(bounds[3], render.HEIGHT, value)
+            self.assertLessEqual(bounds[2], WIDTH, value)
+            self.assertLessEqual(bounds[3], HEIGHT, value)
             for card in canvas.cards:
                 if intersects(bounds, card):
                     for actual, edge in ((bounds[0] - card[0], 8), (bounds[1] - card[1], 8), (card[2] - bounds[2], 8), (card[3] - bounds[3], 8)):

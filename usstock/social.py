@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from brief_common.format import fmt_pct, fmt_px, weekday_cn
+from common.format import fmt_pct, fmt_px, weekday_cn
 from .models import Brief, Quote, new_york_time
 
 
@@ -8,9 +8,15 @@ def _quotes(quotes: list[Quote]) -> list[str]:
     rows: list[str] = []
     for quote in quotes:
         session = {"regular": "常规场", "overnight": "夜盘", "premarket": "盘前", "postmarket": "盘后延长交易", "futures": "期货", "reference": "参考"}.get(quote.session, quote.session)
-        stamp = new_york_time(quote.asof).strftime("%m-%d %H:%M ET") if quote.asof else "时点待确认"
+        if quote.is_snapshot:
+            stamp = f"夜盘快照 · 采集{new_york_time(quote.observed_at):%m-%d %H:%M ET} · 成交时间未披露"
+        else:
+            stamp = new_york_time(quote.asof).strftime("%m-%d %H:%M ET") if quote.asof else "时点待确认"
+        status = " · 缓存" if quote.cached else ""
+        if quote.delay_minutes:
+            status += f" · 延迟{quote.delay_minutes}分钟"
         unit = {"USD": "美元", "points": "点", "%": "%"}.get(quote.unit, quote.unit)
-        rows.append(f"{quote.name} ({quote.symbol})  {fmt_px(quote.last)}{unit}  {fmt_pct(quote.pct)}  [{session} {stamp}；{quote.source}]")
+        rows.append(f"{quote.name} ({quote.symbol})  {fmt_px(quote.last)}{unit}  {fmt_pct(quote.pct)}  [{session} {stamp}；{quote.source}{status}]")
     return rows
 
 
@@ -36,7 +42,7 @@ def social_copy(brief: Brief) -> str:
         label = "最新延长交易" if brief.kind == "premarket" else "参考常规场"
         lines.extend(["", f"11类板块ETF（{label}，不代表全市场涨跌家数）", *_quotes(brief.sectors)])
     if brief.kind == "postmarket" and brief.activity is not None and brief.activity.volume is not None:
-        lines.extend(["", f"SPY全日成交量 {brief.activity.volume:,.0f}股（单只ETF，不是成交额或全市场量能）"])
+        lines.extend(["", f"SPY披露日线股数代理 {brief.activity.volume:,.0f}股（{brief.activity.source}；供应商日线口径，非全市场成交额）"])
     if brief.references:
         lines.extend(["", "宏观参考（按各项实际时点）", *_quotes(brief.references)])
     if brief.news:

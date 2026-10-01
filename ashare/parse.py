@@ -4,7 +4,9 @@ import json
 import re
 from datetime import date
 from math import isfinite
-from .format import million_to_ccy
+
+from common.format import million_to_ccy
+from .calendar import previous_trading_day
 from .models import Breadth, BreadthBucket, CapitalMix, CrossBorder, Quote, SectorFlow, SectorMove, TurnoverComparison
 
 SINA_RE = re.compile(r'var hq_str_([A-Za-z0-9_]+)="([^"]*)"')
@@ -211,29 +213,6 @@ def parse_fx(symbol: str, body: str, name: str) -> Quote | None:
     return Quote(symbol=symbol, name=label, last=last, pct=pct, session=session)
 
 
-def parse_cme_future(symbol: str, body: str, fallback: str) -> Quote | None:
-    if not body:
-        return None
-    parts = body.split(",")
-    if len(parts) < 9:
-        return None
-    last = _optional_float(parts[0])
-    if last is None or last <= 0:
-        return None
-    prev = None
-    for index in (8, 7):
-        candidate = _optional_float(parts[index])
-        if candidate is not None and candidate > 0 and abs(candidate - last) / candidate < 0.2:
-            prev = candidate
-            break
-    pct = ((last - prev) / prev * 100) if prev else None
-    change = (last - prev) if prev is not None else None
-    name = parts[13].strip() if len(parts) > 13 and parts[13].strip() else fallback
-    clock = parts[6][:5] if len(parts) > 6 and re.match(r"\d{2}:\d{2}", parts[6]) else ""
-    session = f"夜盘 {clock}".strip()
-    return Quote(symbol=symbol, name=name, last=last, pct=pct, change=change, prev_close=prev, session=session)
-
-
 def parse_sina_industries(text: str, limit: int = 5) -> tuple[list[SectorMove], list[SectorMove]]:
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
@@ -294,7 +273,10 @@ def parse_fenbu(items: list[dict], limit_up: int | None = None, limit_down: int 
 
 
 def parse_industry_flows(payload: dict, limit: int = 5) -> tuple[list[SectorFlow], list[SectorFlow]]:
-    diff = ((payload.get("data") or {}).get("diff")) or []
+    data = payload.get("data")
+    diff = data.get("diff") if isinstance(data, dict) else []
+    if not isinstance(diff, list):
+        return [], []
     rows: list[SectorFlow] = []
     for item in diff:
         if not isinstance(item, dict):
@@ -335,7 +317,7 @@ def parse_cross_border(north_row: dict | None, south_rows: dict[str, dict]) -> C
     )
 
 
-QQ_RE = re.compile(r'v_([A-Za-z0-9]+)="([^"]*)"')
+TENCENT_RE = re.compile(r'v_([A-Za-z0-9]+)="([^"]*)"')
 
 INDEX_ORDER = (
     "上证指数",
@@ -350,8 +332,8 @@ INDEX_ORDER = (
 OVERSEAS_ORDER = ("道琼斯", "纳斯达克", "标普500", "日经225", "韩国KOSPI", "韩国KOSDAQ", "恒生指数", "恒生科技")
 
 
-def parse_qq_bundle(text: str) -> dict[str, str]:
-    return {match.group(1): match.group(2) for match in QQ_RE.finditer(text)}
+def parse_tencent_bundle(text: str) -> dict[str, str]:
+    return {match.group(1): match.group(2) for match in TENCENT_RE.finditer(text)}
 
 
 def _stamp_index(parts: list[str]) -> int | None:
@@ -394,7 +376,7 @@ def _split_stamp(stamp: str, kind: str) -> tuple[str, str]:
     return day, clock
 
 
-def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote | None:
+def parse_tencent_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote | None:
     if not body:
         return None
     parts = body.split("~")
@@ -437,7 +419,7 @@ def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote
     )
 
 
-def parse_qq_fx(symbol: str, body: str, name: str) -> Quote | None:
+def parse_tencent_fx(symbol: str, body: str, name: str) -> Quote | None:
     if not body:
         return None
     parts = body.split("~")
@@ -458,37 +440,33 @@ def parse_qq_fx(symbol: str, body: str, name: str) -> Quote | None:
     return Quote(symbol=symbol, name=name, last=last, pct=pct, session=session, trade_day=trade_day)
 
 
-def parse_qq_capital(market: str, payload: dict) -> CapitalMix | None:
-    flow = ((payload.get("data") or {}).get("todayFundFlow")) or payload.get("todayFundFlow") or {}
+def parse_tencent_capital(market: str, payload: dict) -> CapitalMix | None:
+    root = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    flow = root.get("todayFundFlow")
+    if not isinstance(flow, dict):
+        return None
     values = [_optional_float(flow.get(key)) for key in ("mainNetIn", "superFlow", "bigFlow", "normalFlow", "smallFlow")]
     if any(value is None for value in values):
         return None
-    trend = ((payload.get("data") or {}).get("todayFundTrend")) or payload.get("todayFundTrend") or {}
-    stamps = [str(row.get("time") or "") for row in trend.get("minList") or [] if isinstance(row, dict)]
+    trend = root.get("todayFundTrend")
+    minutes = trend.get("minList") if isinstance(trend, dict) else []
+    if not isinstance(minutes, list):
+        minutes = []
+    stamps = [str(row.get("time") or "") for row in minutes if isinstance(row, dict)]
     days = [_date_stamp(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}") for stamp in stamps if re.fullmatch(r"\d{12,14}", stamp)]
     trade_day = max((day for day in days if day), default="")
     return CapitalMix(market, *values, trade_day=trade_day)
-
-
-def parse_qq_spark(payload: dict) -> list[float]:
-    node = ((payload.get("data") or {}).get("sh000001")) or {}
-    rows = node.get("day") or node.get("qfqday") or []
-    closes: list[float] = []
-    for row in rows:
-        try:
-            close = _optional_float(row[2])
-            if close is not None and close > 0:
-                closes.append(close)
-        except (IndexError, TypeError, ValueError):
-            continue
-    return closes
 
 
 def parse_sina_board_money(text: str, limit: int = 5) -> tuple[list[SectorMove], list[SectorMove], list[SectorFlow], list[SectorFlow]]:
     payload = json.loads(text)
     moves: list[SectorMove] = []
     flows: list[SectorFlow] = []
+    if not isinstance(payload, list):
+        return [], [], [], []
     for row in payload:
+        if not isinstance(row, dict):
+            continue
         name = _clean_label(str(row.get("name") or ""))
         if not name or name in SKIP_SECTORS:
             continue
@@ -550,18 +528,6 @@ def combine_quotes(
     return merged, "primary"
 
 
-def parse_spark_closes(payload: list[dict]) -> list[float]:
-    closes: list[float] = []
-    for row in payload:
-        try:
-            close = _optional_float(row["close"])
-            if close is not None and close > 0:
-                closes.append(close)
-        except (KeyError, TypeError, ValueError):
-            continue
-    return closes
-
-
 def parse_sohu_turnover(payload: object, trade_date: date) -> TurnoverComparison | None:
     """Read the Shanghai index's two consecutive sessions from one Sohu response.
 
@@ -588,11 +554,44 @@ def parse_sohu_turnover(payload: object, trade_date: date) -> TurnoverComparison
         if day in amounts and amounts[day] != amount:
             return None
         amounts[day] = amount
-    previous_days = [day for day in amounts if day < trade_date]
-    if trade_date not in amounts or not previous_days:
+    return _turnover_comparison(amounts, trade_date, "搜狐", scale=10_000)
+
+
+def parse_eastmoney_turnover(payload: object, trade_date: date) -> TurnoverComparison | None:
+    """Eastmoney daily K-line column 6 is RMB amount; column 5 is volume."""
+    if not isinstance(payload, dict):
         return None
-    previous_date = max(previous_days)
-    current, previous = amounts[trade_date], amounts[previous_date]
+    data = payload.get("data")
+    if not isinstance(data, dict) or data.get("code") != "000001" or data.get("market") != 1:
+        return None
+    rows = data.get("klines")
+    if not isinstance(rows, list):
+        return None
+    amounts: dict[date, float | None] = {}
+    for row in rows:
+        if not isinstance(row, str):
+            continue
+        fields = row.split(",")
+        stamp = _date_stamp(fields[0])
+        if not stamp:
+            continue
+        day = date.fromisoformat(stamp)
+        amount = _optional_float(fields[6]) if len(fields) > 6 else None
+        if amount is not None and amount <= 0:
+            amount = None
+        if day in amounts and amounts[day] != amount:
+            return None
+        amounts[day] = amount
+    return _turnover_comparison(amounts, trade_date, "东财")
+
+
+def _turnover_comparison(amounts: dict[date, float | None], trade_date: date,
+                         source: str, scale: float = 1) -> TurnoverComparison | None:
+    try:
+        previous_date = previous_trading_day(trade_date)
+    except ValueError:
+        return None
+    current, previous = amounts.get(trade_date), amounts.get(previous_date)
     if current is None or previous is None:
         return None
-    return TurnoverComparison(trade_date, previous_date, current * 10_000, previous * 10_000)
+    return TurnoverComparison(trade_date, previous_date, current * scale, previous * scale, source)

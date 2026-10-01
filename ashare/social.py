@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
+from common.format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
 from .narrative import market_summary
 from .parse import INDEX_ORDER
@@ -16,7 +16,7 @@ def social_copy(brief: Brief) -> str:
 
 
 def _dated_title(brief: Brief) -> str:
-    shown = brief.edition_date()
+    shown = brief.edition_date
     return f"A股{brief.title}｜{shown.month}月{shown.day}日 {weekday_cn(shown)}"
 
 

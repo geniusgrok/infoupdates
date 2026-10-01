@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import datetime
 from unittest.mock import patch
 
-from brief_common import news
+from common import news
 
 
 class SharedNewsTests(unittest.TestCase):
+    def test_malformed_provider_envelope_is_a_controlled_failure(self):
+        for payload in ([], {"data": ["provider error"]}, {"data": {"items": {}}}):
+            with self.subTest(payload=payload), patch.object(news, "fetch_text", return_value=json.dumps(payload)):
+                with self.assertRaises(ValueError):
+                    news.wscn_items("global-channel", pages=1)
+        for payload in ([], {"data": ["provider error"]}, {"data": {"fastNewsList": {}}}):
+            with self.subTest(payload=payload), patch.object(news, "fetch_text", return_value=json.dumps(payload)):
+                with self.assertRaises(ValueError):
+                    news.em_items("103")
+
     def test_bad_news_row_does_not_discard_other_valid_rows(self):
         payload = {'data': {'items': [
             {'title': '美国经济数据发布时间已确定', 'display_time': 'bad'},
@@ -33,24 +42,6 @@ class SharedNewsTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].source_score, 1.4)
         self.assertEqual(result[0].published.hour, 5)
-
-
-class LegacyCompatibilityTests(unittest.TestCase):
-    def test_legacy_data_and_commands_use_the_canonical_ashare_implementation(self):
-        from a_share_brief import __main__ as legacy_cli
-        from a_share_brief.compose import build_brief as legacy_build
-        from a_share_brief.fetch import MarketData
-        from a_share_brief.models import CST, Quote
-        from ashare.__main__ import main
-        from ashare.compose import build_brief
-        from ashare.models import Brief
-
-        data = MarketData(indices=[Quote('sh000001', '上证指数', 3842.19, pct=.31,
-                                      trade_day='2026-09-30', session='15:35:00')])
-        now = datetime(2026, 9, 30, 20, tzinfo=CST)
-        self.assertIsInstance(legacy_build('close', data, now=now), Brief)
-        self.assertIs(legacy_build, build_brief)
-        self.assertIs(legacy_cli.main, main)
 
 
 if __name__ == '__main__':

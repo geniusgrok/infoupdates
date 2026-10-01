@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from math import isfinite
 
-from .fetch import CST, MarketData, load_market
-from .models import HOLIDAY_RANGES, Brief, Narrative, Quote, china_time, is_trading_day, previous_trading_day
+from .calendar import HOLIDAY_RANGES, edition_date, is_trading_day, previous_trading_day
+from .models import CST, Brief, MarketData, Narrative, Quote, china_time
 from .narrative import build_narrative
 from .rank import select_news
 
@@ -36,6 +36,8 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     now = china_time(now or datetime.now(CST))
     hero = _hero(data.indices)
     notes = [note for note in data.notes if not (kind == "close" and note == "要闻暂缺")]
+    if data.sectors_up or data.sectors_down or data.sector_in or data.sector_out:
+        notes.append("行业接口未披露可核验交易日期；涨跌与资金按各自供应商分类展示")
     indices: list[Quote] = []
     for quote in data.indices:
         if not isfinite(quote.last) or quote.last <= 0:
@@ -76,10 +78,10 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
         kind=kind,
         generated_at=now,
         trade_date=trade_date,
+        edition_date=edition_date(kind, now, trade_date),
         preview=preview,
         hero=hero,
         indices=indices,
-        spark=data.spark,
         sectors_up=data.sectors_up,
         sectors_down=data.sectors_down,
         capital=capital,
@@ -89,7 +91,6 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
         cross=cross,
         overseas=data.overseas,
         fx=data.fx,
-        futures=data.futures,
         news=news,
         narrative=Narrative(style="", sentiment="", summary="", watch=[]),
         turnover=_turnover(indices, trade_date),
@@ -115,7 +116,3 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
             brief.notes.append("沪市成交额比较日期或数据不完整，量能待确认")
     brief.narrative = build_narrative(brief)
     return brief
-
-
-def load_brief(kind: str, now: datetime | None = None) -> Brief:
-    return build_brief(kind, load_market(), now=now)

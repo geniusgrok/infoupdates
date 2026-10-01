@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, time, timedelta
 
-from .models import CST, NewsItem, china_time, previous_trading_day
+from .calendar import previous_trading_day
+from .models import CST, NewsItem, china_time
 
 BOOSTS: tuple[tuple[str, int], ...] = (
     ("收评", 36),

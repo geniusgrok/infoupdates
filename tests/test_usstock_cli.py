@@ -49,7 +49,7 @@ class UsCliTests(unittest.TestCase):
             self.assertIn("美股盘前精选 2026-10-02", (output / "us-premarket-2026-10-02.txt").read_text())
             self.assertIn("美股盘后精选 2026-10-01", (output / "us-postmarket-2026-10-01.txt").read_text())
             self.assertIn("us-postmarket-2026-10-01.png", stdout)
-            load.assert_called_once_with(now=now)
+            load.assert_called_once_with()
             self.assertEqual(compose.call_count, 2)
             self.assertEqual(render.call_count, 2)
             self.assertEqual(copy.call_count, 2)

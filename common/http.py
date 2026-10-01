@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 import urllib.error
 import urllib.request
@@ -11,6 +12,10 @@ UA = (
 
 
 def fetch_bytes(url: str, referer: str, timeout: float = 20, retries: int = 2) -> bytes:
+    if not isinstance(retries, int) or retries < 0:
+        raise ValueError("retries must be a nonnegative integer")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be a positive finite number")
     headers = {
         "User-Agent": UA,
         "Referer": referer,
@@ -30,7 +35,7 @@ def fetch_bytes(url: str, referer: str, timeout: float = 20, retries: int = 2) -
             last_error = exc
             if attempt == retries:
                 raise
-        time.sleep(0.4 * (attempt + 1))
+        time.sleep(min(0.4 * (attempt + 1), 1.2))
     raise RuntimeError(f"fetch failed: {url}") from last_error
 
 

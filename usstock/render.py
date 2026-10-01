@@ -3,11 +3,12 @@ from __future__ import annotations
 from math import isfinite
 from pathlib import Path
 
-from brief_common.format import fmt_pct, fmt_px, weekday_cn
-from brief_common.render import (
-    AMBER, BG, CARD, GREEN, HEIGHT, MUTED, RED, TEXT, WIDTH, Canvas, _tone,
+from common.format import fmt_pct, fmt_px, weekday_cn
+from common.render import (
+    AMBER, BG, CARD, GREEN, HEIGHT, MUTED, RED, TEXT, WIDTH, Canvas, change_color,
 )
 
+from .calendar import previous_trading_day
 from .models import (
     FUTURE_NAMES, INDEX_NAMES, MACRO_NAMES, MEGA_NAMES, Brief, Quote, new_york_time,
 )
@@ -21,19 +22,33 @@ def _current(quotes: list[Quote], brief: Brief) -> dict[str, Quote]:
     available = _available(quotes)
     if brief.kind == "premarket":
         return {symbol: quote for symbol, quote in available.items()
-                if quote.session in {"overnight", "premarket", "postmarket"} and quote.asof is not None}
+                if quote.session in {"overnight", "premarket", "postmarket"} and (quote.asof is not None or quote.is_snapshot)}
     return available
 
 
-def _stamp(quote: Quote | None, brief: Brief) -> str:
-    if quote is None or quote.asof is None:
+def _stamp(quote: Quote | None, brief: Brief, *, compact: bool = False) -> str:
+    if quote is None:
         return "时点待确认"
+    status = " · 缓存" if quote.cached else ""
+    if quote.delay_minutes:
+        status += f" · 延迟{quote.delay_minutes}分"
+    if quote.is_snapshot:
+        return f"夜盘快照 · 采集{new_york_time(quote.observed_at):%H:%M} · 成交时间未披露{status}"
+    if quote.asof is None:
+        return "时点待确认"
+    if compact:
+        parts = [new_york_time(quote.asof).strftime("%m.%d %H:%M")]
+        if quote.delay_minutes:
+            parts.append(f"延{quote.delay_minutes}分")
+        if quote.cached:
+            parts.append("缓存")
+        return " ".join(parts)
     phase = {"premarket": "盘前", "postmarket": "盘后", "overnight": "夜盘", "reference": "参考", "futures": "期货"}.get(quote.session)
     if phase is None:
         phase = "前收" if quote.trade_date != brief.edition_date else "常规"
         if brief.kind == "postmarket" and brief.complete and quote.trade_date == brief.edition_date:
             phase = "收盘"
-    return f"{phase}{new_york_time(quote.asof):%m.%d %H:%M}"
+    return f"{phase}{new_york_time(quote.asof):%m.%d %H:%M}{status}"
 
 
 def _price(quote: Quote | None) -> str:
@@ -60,18 +75,18 @@ def _volume(value: float | None) -> str:
 def _activity(brief: Brief) -> str:
     quote = brief.activity
     if quote is None or quote.volume is None or not isfinite(quote.volume) or quote.volume < 0:
-        return "SPY成交量待确认；成交量按股数统计。"
+        return "SPY日线股数待确认；供应商披露口径。"
     day = f"{quote.trade_date:%m.%d} " if quote.trade_date is not None else ""
-    caption = f"{day}SPY成交量 {_volume(quote.volume)}"
+    caption = f"{day}SPY日线股数 {_volume(quote.volume)}"
     if (quote.previous_volume is not None and isfinite(quote.previous_volume) and quote.previous_volume >= 0
             and quote.previous_date is not None and quote.trade_date is not None
-            and quote.previous_date < quote.trade_date):
+            and quote.previous_date == previous_trading_day(quote.trade_date)):
         delta = quote.volume - quote.previous_volume
         direction = "增加" if delta > 0 else "减少" if delta < 0 else "持平"
         caption += f" · 较{quote.previous_date:%m.%d}{direction}"
         if delta:
             caption += _volume(abs(delta))
-    return caption + "（股数）"
+    return caption + f" · {quote.source}"
 
 
 def _distribution(quotes: list[Quote]) -> str:
@@ -107,7 +122,7 @@ def _primary(canvas: Canvas, brief: Brief) -> None:
         canvas.text(x + col / 2, 285, name, 30, MUTED, "medium", "center", max_width=col - 24)
         canvas.text(x + col / 2, 320, _stamp(quote, brief), 17, MUTED, align="center", max_width=col - 24)
         canvas.text(x + col / 2, 341, fmt_pct(quote.pct if quote else None), 42,
-                    _tone(quote.pct if quote else None), "bold", "center", max_width=col - 24, min_size=30)
+                    change_color(quote.pct if quote else None), "bold", "center", max_width=col - 24, min_size=30)
         canvas.text(x + col / 2, 385, _price(quote), 25, TEXT, align="center", max_width=col - 24, min_size=22)
 
     canvas.card(28, 432, 1024, 78)
@@ -142,7 +157,7 @@ def _stocks(canvas: Canvas, brief: Brief) -> None:
         x, y = (50 if i % 2 == 0 else 574), 600 + (i // 2) * 50
         quote = quotes.get(symbol)
         canvas.pair(x, y, 454, f"{symbol} {quote.name if quote else name}",
-                    fmt_pct(quote.pct if quote else None), 30, color=_tone(quote.pct if quote else None), weight="medium")
+                    fmt_pct(quote.pct if quote else None), 30, color=change_color(quote.pct if quote else None), weight="medium")
         after = extended.get(symbol)
         detail = f"盘后{_price(after)} {fmt_pct(after.pct)}" if after else _price(quote)
         stamp = new_york_time(after.asof).strftime("%m.%d %H:%M") if after and after.asof else _stamp(quote, brief)
@@ -179,7 +194,7 @@ def _sectors(canvas: Canvas, brief: Brief) -> None:
             y = row_y + i * pitch
             canvas.pair(x, y, 454, f"{quote.name} {quote.symbol}" if quote else "待确认",
                         fmt_pct(quote.pct if quote else None), 28,
-                        color=_tone(quote.pct if quote else None), weight="regular")
+                        color=change_color(quote.pct if quote else None), weight="regular")
             if brief.kind == "premarket":
                 canvas.text(x + 454, y + 30, _stamp(quote, brief), 15, MUTED, align="right", max_width=454)
 
@@ -194,8 +209,8 @@ def _macro_news(canvas: Canvas, brief: Brief) -> None:
         quote = quotes.get(symbol)
         y = 1207 + i * 62
         canvas.pair(50, y, 346, name, fmt_pct(quote.pct if quote else None), 27,
-                    color=_tone(quote.pct if quote else None), label_color=MUTED)
-        canvas.pair(50, y + 31, 346, _price(quote), _stamp(quote, brief), 18,
+                    color=change_color(quote.pct if quote else None), label_color=MUTED)
+        canvas.pair(50, y + 31, 346, _price(quote), _stamp(quote, brief, compact=True), 17, value_size=16,
                     color=MUTED, label_color=TEXT, gap=10)
         if i < 4:
             canvas.line(50, y + 54, 396)
@@ -223,7 +238,9 @@ def render_png(brief: Brief, path: Path) -> Path:
     _sectors(canvas, brief)
     _macro_news(canvas, brief)
     status = "数据限制见文案" if brief.notes else "公开行情可能延迟"
-    source = "Yahoo Finance / BOATS / 见闻" if brief.kind == "premarket" else "Yahoo Finance / 见闻"
+    quotes = brief.indices + brief.futures + brief.stocks + brief.sectors + brief.references + brief.extended_stocks
+    providers = sorted({quote.source.split("（", 1)[0] for quote in quotes} | {item.source for item in brief.news})
+    source = " / ".join(providers) if providers else "公开行情暂缺"
     canvas.text(28, 1585, f"{source} · {status}", 18, MUTED, max_width=650)
     canvas.text(1052, 1585, "美东时间 · 红涨绿跌 · 不构成投资建议", 18, MUTED, align="right", max_width=410)
     path = Path(path)
