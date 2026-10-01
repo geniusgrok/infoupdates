@@ -4,6 +4,29 @@ from .format import fmt_pct, fmt_px, fmt_yi
 from .models import Brief, Narrative, Quote, SectorFlow
 
 
+def market_summary(brief: Brief) -> str:
+    """统一使用沪市全日成交额描述量能，数值单位为亿元。"""
+    labels = {
+        "偏弱": "低落", "偏强": "高涨", "温和偏强": "平淡偏强",
+        "中性": "平淡", "中性偏谨慎": "平淡偏谨慎",
+    }
+    sentiment = labels.get(brief.narrative.sentiment, "待确认")
+    mood = f"市场情绪{sentiment}"
+    comparison = brief.turnover_comparison
+    if comparison is None or brief.is_intraday:
+        reason = "盘中成交额尚未完整" if brief.is_intraday else "上日完整成交额暂缺"
+        return f"{mood}，量能待确认（{reason}）。"
+    delta = comparison.current - comparison.previous
+    ratio = delta / comparison.previous
+    volume = "放量" if ratio > 0.05 else "缩量" if ratio < -0.05 else "基本平量"
+    if abs(delta) < 0.05e8:
+        change = "成交额与上日基本持平"
+    else:
+        direction = "增加" if delta > 0 else "减少"
+        change = f"成交额较上日{direction}{abs(delta) / 1e8:.1f}亿元"
+    return f"{mood}，沪市{volume}（{change}）。"
+
+
 def _find_flow(rows: list[SectorFlow], name: str) -> SectorFlow | None:
     for row in rows:
         if row.name == name:
@@ -11,9 +34,14 @@ def _find_flow(rows: list[SectorFlow], name: str) -> SectorFlow | None:
     return None
 
 
+def _growth_quote(kc: Quote | None, cyb: Quote | None) -> Quote | None:
+    growth = [quote for quote in (kc, cyb) if quote and quote.pct is not None]
+    return min(growth, key=lambda quote: quote.pct or 0.0, default=None)
+
+
 def _style(hero: Quote, sz50: Quote | None, kc: Quote | None, cyb: Quote | None, adv: float | None) -> str:
-    growth = [quote.pct for quote in (kc, cyb) if quote and quote.pct is not None]
-    growth_pct = min(growth) if growth else None
+    growth = _growth_quote(kc, cyb)
+    growth_pct = growth.pct if growth else None
     if hero.pct is not None and hero.pct <= -1 and adv is not None and adv < 0.4:
         return "普跌"
     if hero.pct is not None and hero.pct >= 1 and adv is not None and adv > 0.62:
@@ -25,13 +53,16 @@ def _style(hero: Quote, sz50: Quote | None, kc: Quote | None, cyb: Quote | None,
     return "结构分化"
 
 
-def _sentiment(hero: Quote, kc: Quote | None, adv: float | None, limit_up: int, limit_down: int, main_net: float | None) -> str:
+def _sentiment(hero: Quote, kc: Quote | None, adv: float | None, limit_up: int | None, limit_down: int | None, main_net: float | None) -> str:
+    if hero.pct is None or adv is None:
+        return "待确认"
     score = 50.0
     if hero.pct is not None:
         score += max(-3.0, min(3.0, hero.pct)) * 6
     if adv is not None:
         score += (adv - 0.5) * 80
-    score += max(-1.0, min(1.0, (limit_up - limit_down) / 80)) * 8
+    if limit_up is not None and limit_down is not None:
+        score += max(-1.0, min(1.0, (limit_up - limit_down) / 80)) * 8
     if main_net is not None and main_net < 0:
         score -= 5
     if kc and kc.pct is not None and kc.pct < -1:
@@ -47,11 +78,12 @@ def _sentiment(hero: Quote, kc: Quote | None, adv: float | None, limit_up: int, 
     return "偏弱"
 
 
-def _style_clause(style: str, sz50: Quote | None, kc: Quote | None) -> str:
-    if style == "权重护盘" and sz50 and kc and sz50.pct is not None and kc.pct is not None:
-        return f"上证50 {fmt_pct(sz50.pct)}、科创50 {fmt_pct(kc.pct)}，权重强于成长"
-    if style == "成长占优" and kc and kc.pct is not None:
-        return f"科创50 {fmt_pct(kc.pct)}，成长强于权重"
+def _style_clause(style: str, sz50: Quote | None, kc: Quote | None, cyb: Quote | None) -> str:
+    growth = _growth_quote(kc, cyb)
+    if style == "权重护盘" and sz50 and growth and sz50.pct is not None:
+        return f"上证50 {fmt_pct(sz50.pct)}、{growth.name} {fmt_pct(growth.pct)}，权重强于成长"
+    if style == "成长占优" and growth:
+        return f"{growth.name} {fmt_pct(growth.pct)}，成长强于权重"
     if style == "普涨":
         return "指数与个股一起走强"
     if style == "普跌":
@@ -62,7 +94,7 @@ def _style_clause(style: str, sz50: Quote | None, kc: Quote | None) -> str:
 def build_narrative(brief: Brief) -> Narrative:
     hero = brief.hero
     if hero.last <= 0:
-        return Narrative("数据暂缺", "—", "指数行情没有取到，其余内容按已经返回的数据展示。", _watch(brief, "结构分化"))
+        return Narrative("数据暂缺", "待确认", "指数行情没有取到，其余内容按已经返回的数据展示。", _watch(brief, ""))
     sz50 = brief.index("上证50")
     kc = brief.index("科创50")
     cyb = brief.index("创业板指")
@@ -77,11 +109,12 @@ def build_narrative(brief: Brief) -> Narrative:
         breadth.limit_down if breadth else 0,
         brief.main_net,
     )
-    style_clause = _style_clause(style, sz50, kc)
-    line1 = f"上证收于{fmt_px(hero.last)}（{fmt_pct(hero.pct)}），{style_clause}。"
+    style_clause = _style_clause(style, sz50, kc, cyb)
+    price_label = "盘中上证现报" if brief.is_intraday else "上证收于"
+    line1 = f"{price_label}{fmt_px(hero.last)}（{fmt_pct(hero.pct)}），{style_clause}。"
     if breadth:
         line2 = (
-            f"上涨{breadth.up}家、下跌{breadth.down}家，涨停{breadth.limit_up}、跌停{breadth.limit_down}，"
+            f"上涨{breadth.up}家、下跌{breadth.down}家，涨停{breadth.limit_up if breadth.limit_up is not None else '—'}、跌停{breadth.limit_down if breadth.limit_down is not None else '—'}，"
             f"情绪{sentiment}。"
         )
     else:
@@ -89,6 +122,9 @@ def build_narrative(brief: Brief) -> Narrative:
     flow_bits: list[str] = []
     if brief.main_net is not None:
         flow_bits.append(f"沪深主力{fmt_yi(brief.main_net, signed=True)}")
+    else:
+        for item in brief.capital:
+            flow_bits.append(f"{item.market}主力{fmt_yi(item.main, signed=True)}")
     semi = _find_flow(brief.sector_out, "半导体") or _find_flow(brief.sector_in, "半导体")
     if semi:
         flow_bits.append(f"半导体{fmt_yi(semi.net, signed=True)}")
@@ -123,8 +159,8 @@ def _watch(brief: Brief, style: str) -> list[str]:
         for flow in brief.sector_out:
             if any(flow.name in text for text in items):
                 continue
-            items.append(f"{flow.name}{brief.session_label()}主力净流出{fmt_yi(flow.net, signed=True)}。")
+            items.append(f"{flow.name}{brief.session_label()}主力净流出{fmt_yi(abs(flow.net))}。")
             break
     if not items and style:
-        items.append(f"{brief.session_label()}板块分化，开盘先看强势板块能否延续、弱势板块有没有承接。")
+        items.append("板块行情暂缺，强弱方向待确认。")
     return items[:3]

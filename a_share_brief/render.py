@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import re
+from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
-from .models import Brief, Quote
+from .models import Brief, NewsItem, Quote, china_time
+from .narrative import market_summary
 
-WIDTH = 1080
-SCALE = 2
-PAD = 48
-
+WIDTH, HEIGHT = 1080, 1620
 BG = (8, 10, 13)
 CARD = (18, 22, 27)
 LINE = (46, 54, 64)
@@ -18,558 +19,373 @@ HAIR = (34, 40, 48)
 AMBER = (232, 176, 74)
 TEXT = (242, 244, 246)
 MUTED = (164, 172, 182)
-DIM = (112, 122, 134)
 RED = (255, 92, 92)
 GREEN = (38, 196, 146)
-FLAT_BG = (36, 40, 46)
-
-ROOT = Path(__file__).resolve().parents[1]
-FONT_DIR = ROOT / "assets" / "fonts"
-TAPE_ORDER = ("上证指数", "深证成指", "创业板指", "沪深300", "上证50", "中证500", "中证1000", "科创50")
+FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 MORNING_ABROAD = ("道琼斯", "纳斯达克", "标普500", "日经225", "韩国KOSPI", "韩国KOSDAQ")
 
 
 def _font_file(weight: str) -> Path:
-    names = {
-        "regular": "NotoSansSC-Regular.ttf",
-        "medium": "NotoSansSC-Medium.ttf",
-        "bold": "NotoSansSC-Bold.ttf",
-    }
+    names = {"regular": "NotoSansSC-Regular.ttf", "medium": "NotoSansSC-Medium.ttf", "bold": "NotoSansSC-Bold.ttf"}
     path = FONT_DIR / names[weight]
-    if path.exists():
-        return path
-    return Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc")
+    return path if path.exists() else Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc")
+
+
+@lru_cache(maxsize=256)
+def _font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(_font_file(weight)), size)
+
+
+def _width(value: str, face: ImageFont.FreeTypeFont) -> float:
+    bounds = face.getbbox(value, anchor="lt")
+    return max(face.getlength(value), bounds[2] - bounds[0])
+
+
+def _ellipsize(value: str, face: ImageFont.FreeTypeFont, width: float) -> str:
+    if _width(value, face) <= width:
+        return value
+    while value and _width(value + "…", face) > width:
+        value = value[:-1]
+    return value + "…" if _width("…", face) <= width else ""
 
 
 class Canvas:
     def __init__(self) -> None:
-        self.scale = SCALE
-        self.w = WIDTH
-        self.pad = PAD
-        self.y = 0
-        self.image = Image.new("RGB", (WIDTH * SCALE, 5200 * SCALE), BG)
+        self.image = Image.new("RGB", (WIDTH, HEIGHT), BG)
         self.draw = ImageDraw.Draw(self.image)
-        self._fonts: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
-    def font(self, weight: str, size: int) -> ImageFont.FreeTypeFont:
-        key = (weight, size)
-        if key not in self._fonts:
-            self._fonts[key] = ImageFont.truetype(str(_font_file(weight)), size * self.scale)
-        return self._fonts[key]
+    def text(self, x: float, y: float, value: str, size: int = 32,
+             color: tuple[int, int, int] = TEXT, weight: str = "regular",
+             align: str = "left", max_width: float | None = None,
+             min_size: int | None = None) -> tuple[float, float, float, float]:
+        if max_width is not None:
+            floor = min_size if min_size is not None else size
+            while size > floor and _width(value, _font(size, weight)) > max_width:
+                size -= 1
+            value = _ellipsize(value, _font(size, weight), max_width)
+        face = _font(size, weight)
+        if align == "right":
+            x -= _width(value, face)
+        elif align == "center":
+            x -= _width(value, face) / 2
+        bounds = self.draw.textbbox((x, y), value, font=face, anchor="lt")
+        self.draw.text((x, y), value, font=face, fill=color, anchor="lt")
+        return bounds
 
-    def s(self, value: float) -> float:
-        return value * self.scale
+    def pair(self, x: float, y: float, width: float, label: str, value: str,
+             size: int = 30, value_size: int | None = None,
+             color: tuple[int, int, int] = TEXT, label_color: tuple[int, int, int] = TEXT,
+             weight: str = "regular", gap: int = 12) -> None:
+        value_size = value_size or size
+        label_size = size
+        while label_size > 22 and _width(label, _font(label_size)) + _width(value, _font(value_size, weight)) + gap > width:
+            label_size -= 1
+        while value_size > 22 and _width(value, _font(value_size, weight)) + gap + 22 > width:
+            value_size -= 1
+        value_width = _width(value, _font(value_size, weight))
+        self.text(x, y + max(0, (value_size - label_size) / 2), label, label_size, label_color,
+                  max_width=width - value_width - gap)
+        self.text(x + width, y, value, value_size, color, weight, "right", max_width=width)
 
-    def text(self, x: float, y: float, value: str, font: ImageFont.FreeTypeFont, fill: tuple[int, int, int]) -> None:
-        self.draw.text((self.s(x), self.s(y)), value, font=font, fill=fill)
-
-    def text_right(self, right: float, y: float, value: str, font: ImageFont.FreeTypeFont, fill: tuple[int, int, int]) -> None:
-        width = font.getlength(value) / self.scale
-        self.text(right - width, y, value, font, fill)
-
-    def ellipsize(self, value: str, font: ImageFont.FreeTypeFont, max_width: float) -> str:
-        if font.getlength(value) <= self.s(max_width):
-            return value
-        ellipsis = "…"
-        while value and font.getlength(value + ellipsis) > self.s(max_width):
-            value = value[:-1]
-        return value + ellipsis
-
-    def wrap(self, value: str, font: ImageFont.FreeTypeFont, max_width: float, max_lines: int) -> list[str]:
-        lines: list[str] = []
-        current = ""
-        for index, char in enumerate(value):
-            if current and font.getlength(current + char) > self.s(max_width):
-                if len(lines) == max_lines - 1:
-                    lines.append(self.ellipsize(current + value[index:], font, max_width))
-                    return lines
-                lines.append(current)
-                current = char
+    def paragraph(self, x: float, y: float, value: str, width: float,
+                  size: int, lines: int, color: tuple[int, int, int] = TEXT,
+                  weight: str = "regular", pitch: int | None = None) -> None:
+        value = re.sub(r"\s+", " ", value).strip()
+        face = _font(size, weight)
+        tokens = re.findall(r"[+-]?\d+(?:[.,]\d+)*(?:%|万人|亿元|亿港元|亿|个月)?|[A-Za-z][A-Za-z0-9._/-]*|.", value)
+        tokens = [part for token in tokens for part in (list(token) if _width(token, face) > width else [token])]
+        start = 0
+        for row in range(lines):
+            if start >= len(tokens):
+                break
+            end = start
+            while end < len(tokens) and _width("".join(tokens[start:end + 1]), face) <= width:
+                end += 1
+            if row == lines - 1:
+                line = _ellipsize("".join(tokens[start:]), face, width)
             else:
-                current += char
-        if current:
-            lines.append(self.ellipsize(current, font, max_width))
-        return lines[:max_lines]
+                line = "".join(tokens[start:end])
+            self.text(x, y + row * (pitch or size + 5), line, size, color, weight)
+            start = end
 
-    def round(self, x: float, y: float, w: float, h: float, fill: tuple[int, int, int], radius: float = 12, outline: tuple[int, int, int] | None = None) -> None:
-        self.draw.rounded_rectangle(
-            (self.s(x), self.s(y), self.s(x + w), self.s(y + h)),
-            radius=self.s(radius),
-            fill=fill,
-            outline=outline,
-            width=self.scale if outline else 1,
-        )
+    def card(self, x: float, y: float, width: float, height: float, fill=CARD, radius: int = 19) -> None:
+        self.draw.rounded_rectangle((x, y, x + width, y + height), radius=radius, fill=fill, outline=LINE, width=1)
 
-    def rule(self, color: tuple[int, int, int] = HAIR) -> None:
-        self.draw.line(
-            (self.s(self.pad), self.s(self.y), self.s(self.w - self.pad), self.s(self.y)),
-            fill=color,
-            width=self.scale,
-        )
+    def line(self, x: float, y: float, right: float, bottom: float | None = None, color=HAIR, width: int = 1) -> None:
+        self.draw.line((x, y, right, y if bottom is None else bottom), fill=color, width=width)
 
-    def gap(self, amount: float) -> None:
-        self.y += amount
-
-    def finish(self) -> Image.Image:
-        height = int(self.s(self.y + 8))
-        return self.image.crop((0, 0, WIDTH * SCALE, height))
+    def heading(self, x: float, y: float, label: str) -> None:
+        for i, height in enumerate((14, 23, 32)):
+            self.draw.rounded_rectangle((x + i * 12, y + 32 - height, x + i * 12 + 8, y + 32), radius=1, fill=AMBER)
+        self.text(x + 50, y - 1, label, 36, TEXT, "bold")
 
 
-def _tone(value: float | None) -> tuple[int, int, int]:
-    if value is None or abs(value) < 0.005:
+def _tone(value: float | None):
+    if value is None or not isfinite(value) or abs(value) < 0.005:
         return MUTED
     return RED if value > 0 else GREEN
 
 
-def _content_width() -> int:
-    return WIDTH - PAD * 2
-
-
-def _style_color(style: str) -> tuple[int, int, int]:
-    if style == "普跌":
-        return GREEN
-    if style in {"普涨", "成长占优"}:
-        return RED
-    return AMBER
-
-
-def _masthead(canvas: Canvas, brief: Brief) -> None:
-    canvas.draw.rectangle((0, 0, canvas.s(canvas.w), canvas.s(4)), fill=AMBER)
-    canvas.y = 28
-    canvas.text(canvas.pad, canvas.y, "INFOUPDATES", canvas.font("medium", 13), AMBER)
-    shown = brief.edition_date()
-    title = f"A股{brief.title}"
-    title_font = canvas.font("bold", 40)
-    canvas.y += 28
-    canvas.text(canvas.pad, canvas.y, title, title_font, TEXT)
-    date_label = f"{shown.month}月{shown.day}日  {weekday_cn(shown)}"
-    date_font = canvas.font("bold", 28)
-    title_w = title_font.getlength(title) / canvas.scale
-    canvas.text(canvas.pad + title_w + 20, canvas.y + 10, date_label, date_font, AMBER)
-    canvas.y += 52
-    if brief.kind == "close":
-        subtitle = "股指  ·  板块  ·  资金  ·  情绪  ·  方向"
-    else:
-        subtitle = f"昨日 {brief.trade_date.month}月{brief.trade_date.day}日收盘  ·  隔夜美日韩  ·  今日关注"
-    canvas.text(canvas.pad, canvas.y, subtitle, canvas.font("regular", 14), MUTED)
-    canvas.y += 28
-    canvas.rule(AMBER)
-    canvas.gap(22)
-
-
-def _direction(canvas: Canvas, brief: Brief) -> None:
-    font = canvas.font("regular", 16)
-    inner_w = _content_width() - 40
-    lines = canvas.wrap(brief.narrative.summary, font, inner_w, 4)
-    height = 78 + len(lines) * 26
-    x = canvas.pad
-    y = canvas.y
-    canvas.round(x, y, _content_width(), height, CARD, radius=16, outline=LINE)
-    canvas.draw.rectangle((canvas.s(x), canvas.s(y + 16), canvas.s(x + 4), canvas.s(y + height - 16)), fill=AMBER)
-    label = f"{brief.session_label()}情绪" if brief.kind == "morning" else "市场方向"
-    canvas.text(x + 22, y + 16, label, canvas.font("regular", 13), AMBER)
-    style_color = _style_color(brief.narrative.style)
-    canvas.text(x + 22, y + 36, brief.narrative.style, canvas.font("bold", 28), style_color)
-    sentiment = brief.narrative.sentiment
-    pill_font = canvas.font("medium", 13)
-    pill_w = pill_font.getlength(sentiment) / canvas.scale + 22
-    pill_x = x + _content_width() - pill_w - 18
-    canvas.round(pill_x, y + 40, pill_w, 28, FLAT_BG, radius=8)
-    canvas.text(pill_x + 11, y + 45, sentiment, pill_font, TEXT)
-    text_y = y + 78
-    for line in lines:
-        canvas.text(x + 22, text_y, line, font, MUTED)
-        text_y += 26
-    canvas.y += height + 18
-
-
-def _tape(canvas: Canvas, brief: Brief, heading: str = "") -> None:
-    by_name = {quote.name: quote for quote in brief.indices}
+def _quotes(brief: Brief) -> dict[str, Quote]:
+    quotes = {quote.name: quote for quote in brief.indices + brief.overseas + brief.fx if isfinite(quote.last) and quote.last > 0}
     if brief.hero.last > 0:
-        by_name[brief.hero.name] = brief.hero
-    quotes = [by_name[name] for name in TAPE_ORDER if name in by_name and by_name[name].last > 0]
-    if not quotes:
-        return
-    if heading:
-        canvas.text(canvas.pad, canvas.y, heading, canvas.font("medium", 18), TEXT)
-        canvas.y += 32
-    columns = 4 if len(quotes) > 4 else len(quotes)
-    width = _content_width()
-    cell_w = width / columns
-    cell_h = 78
-    rows = (len(quotes) + columns - 1) // columns
-    height = rows * cell_h
-    y = canvas.y
-    canvas.round(canvas.pad, y, width, height, CARD, radius=14, outline=LINE)
-    for index, quote in enumerate(quotes):
-        col = index % columns
-        row = index // columns
-        cell_x = canvas.pad + col * cell_w
-        cell_y = y + row * cell_h
-        if col:
-            canvas.draw.line(
-                (canvas.s(cell_x), canvas.s(cell_y + 12), canvas.s(cell_x), canvas.s(cell_y + cell_h - 12)),
-                fill=HAIR,
-                width=canvas.scale,
-            )
-        if row:
-            canvas.draw.line(
-                (canvas.s(canvas.pad + 16), canvas.s(cell_y), canvas.s(canvas.pad + width - 16), canvas.s(cell_y)),
-                fill=HAIR,
-                width=canvas.scale,
-            )
-        text_x = cell_x + 16
-        canvas.text(text_x, cell_y + 12, quote.name, canvas.font("regular", 13), DIM)
-        canvas.text(text_x, cell_y + 32, fmt_px(quote.last), canvas.font("medium", 18), TEXT)
-        canvas.text(text_x, cell_y + 54, fmt_pct(quote.pct), canvas.font("medium", 14), _tone(quote.pct))
-    canvas.y += height + 22
+        quotes[brief.hero.name] = brief.hero
+    return quotes
 
 
-def _section(canvas: Canvas, title: str, note: str = "") -> None:
-    canvas.text(canvas.pad, canvas.y, title, canvas.font("medium", 18), TEXT)
-    if note:
-        canvas.text_right(canvas.w - canvas.pad, canvas.y + 4, note, canvas.font("regular", 12), DIM)
-    canvas.y += 30
-    canvas.rule()
-    canvas.gap(14)
+def _pct(quotes: dict[str, Quote], name: str) -> str:
+    return fmt_pct(quotes[name].pct) if name in quotes else "—"
 
 
-def _stat(canvas: Canvas, x: float, y: float, w: float, label: str, value: str, color: tuple[int, int, int]) -> None:
-    canvas.text(x, y, label, canvas.font("regular", 12), DIM)
-    canvas.text(x, y + 18, value, canvas.font("bold", 22), color)
+def _change(quotes: dict[str, Quote], name: str) -> float | None:
+    return quotes[name].pct if name in quotes else None
 
 
-def _sentiment(canvas: Canvas, brief: Brief) -> None:
+def _close_headline(brief: Brief) -> str:
+    weight, star = brief.index("上证50"), brief.index("科创50")
+    if weight and star and weight.pct is not None and star.pct is not None and weight.pct > 0 > star.pct:
+        return "权重微涨，科创回落" if weight.pct < 1 else "权重走强，科创回落"
+    return {"普涨": "指数与个股走强", "普跌": "指数与个股走弱", "成长占优": "成长板块相对占优",
+            "权重护盘": "权重强于成长", "数据暂缺": "市场数据待确认"}.get(brief.narrative.style, "指数与板块表现分化")
+
+
+def _funds(brief: Brief) -> tuple[str, float | None]:
+    if brief.main_net is not None:
+        return "沪深主力净额", brief.main_net
+    if len(brief.capital) == 1:
+        return f"{brief.capital[0].market}主力净额", brief.capital[0].main
+    return "沪深主力净额", None
+
+
+def _observations(brief: Brief) -> list[tuple[str, str]]:
+    main = [brief.index(name) for name in ("上证50", "沪深300", "科创50")]
+    available = [quote for quote in main if quote and quote.pct is not None]
+    index_fact = "，".join(f"{quote.name}{fmt_pct(quote.pct)}" for quote in available) + "。" if available else "主要股指数据暂缺。"
     breadth = brief.breadth
-    if breadth is None and brief.turnover is None:
-        return
-    _section(canvas, "市场情绪", "红涨  绿跌")
-    if breadth:
-        width = _content_width()
-        cell = width / 5
-        y = canvas.y
-        stats = (
-            ("上涨", f"{breadth.up}", RED),
-            ("下跌", f"{breadth.down}", GREEN),
-            ("平盘", f"{breadth.flat}", MUTED),
-            ("涨停", f"{breadth.limit_up}", RED),
-            ("跌停", f"{breadth.limit_down}", GREEN),
-        )
-        for index, (label, value, color) in enumerate(stats):
-            _stat(canvas, canvas.pad + index * cell, y, cell, label, value, color)
-        canvas.y += 58
-        if breadth.total:
-            ratio = breadth.up / breadth.total
-            canvas.text(
-                canvas.pad,
-                canvas.y,
-                f"上涨占比 {ratio * 100:.1f}%",
-                canvas.font("regular", 13),
-                MUTED,
-            )
-            canvas.y += 22
-            _split_bar(canvas, canvas.pad, canvas.y, width, breadth.down, breadth.flat, breadth.up)
-            canvas.y += 22
-        if breadth.buckets:
-            _histogram(canvas, canvas.pad, canvas.y, width, breadth.buckets)
-            canvas.y += 118
-    if brief.turnover is not None:
-        canvas.text(canvas.pad, canvas.y, f"沪深成交额  {fmt_amount(brief.turnover)}", canvas.font("medium", 16), TEXT)
-        canvas.gap(28)
+    if breadth is None or breadth.total == 0:
+        breadth_fact = "涨跌家数暂缺，市场情绪待确认。"
+    elif breadth.up == breadth.down:
+        breadth_fact = f"上涨与下跌各{breadth.up}家。"
     else:
-        canvas.gap(8)
+        side = "上涨" if breadth.up > breadth.down else "下跌"
+        other = "下跌" if side == "上涨" else "上涨"
+        breadth_fact = f"{side}比{other}多{abs(breadth.up - breadth.down)}家。"
+    label, value = _funds(brief)
+    fund_title = "资金待确认" if value is None else "资金流入" if value > 0 else "资金承压" if value < 0 else "资金平衡"
+    fund_fact = "主力资金数据暂缺。" if value is None else f"{label.replace('净额', '')}净{'流入' if value >= 0 else '流出'}{fmt_yi(abs(value), unit='亿元')}。"
+    return [("股指表现", index_fact), ("个股分布", breadth_fact), (fund_title, fund_fact)]
 
 
-def _split_bar(canvas: Canvas, x: float, y: float, w: float, down: int, flat: int, up: int) -> None:
-    total = down + flat + up or 1
-    height = 8
-    canvas.round(x, y, w, height, HAIR, radius=4)
-    down_w = w * down / total
-    flat_w = w * flat / total
-    if down_w > 1:
-        canvas.draw.rectangle((canvas.s(x), canvas.s(y), canvas.s(x + down_w), canvas.s(y + height)), fill=GREEN)
-    if flat_w > 1:
-        canvas.draw.rectangle(
-            (canvas.s(x + down_w), canvas.s(y), canvas.s(x + down_w + flat_w), canvas.s(y + height)),
-            fill=DIM,
-        )
-    up_x = x + down_w + flat_w
-    if w - (up_x - x) > 1:
-        canvas.draw.rectangle((canvas.s(up_x), canvas.s(y), canvas.s(x + w), canvas.s(y + height)), fill=RED)
+def _close(canvas: Canvas, brief: Brief) -> None:
+    pad, right, width = 28, 1052, 1024
+    quotes = _quotes(brief)
+    day = brief.edition_date()
+    title = "A股盘中快照" if brief.is_intraday else "A股收盘精选"
+    canvas.text(pad, 24, "INFOUPDATES", 28, AMBER, "bold")
+    canvas.text(right, 27, china_time(brief.generated_at).strftime("生成%m.%d %H:%M CST"), 24, MUTED, align="right")
+    canvas.text(pad, 75, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · {title}", 51, TEXT, "bold", max_width=width, min_size=44)
+    canvas.text(pad, 143, _close_headline(brief), 44, AMBER, "bold", max_width=760, min_size=36)
+    canvas.text(right, 155, brief.narrative.style, 29, MUTED, "medium", "right", max_width=230)
+    canvas.card(pad, 199, width, 54, radius=12)
+    canvas.text(52, 214, market_summary(brief), 30, TEXT, "medium", max_width=976, min_size=25)
+
+    col = (width - 36) / 4
+    for i, name in enumerate(("上证指数", "深证成指", "创业板指", "科创50")):
+        x = pad + i * (col + 12)
+        canvas.card(x, 270, col, 148)
+        canvas.text(x + col / 2, 288, name, 33, MUTED, "medium", "center", max_width=col - 24)
+        canvas.text(x + col / 2, 336, _pct(quotes, name), 48 if i == 3 else 44, _tone(_change(quotes, name)), "bold" if i == 3 else "medium", "center", max_width=col - 24, min_size=35)
+        price = fmt_px(quotes[name].last, 2) if name in quotes else "—"
+        canvas.text(x + col / 2, 382, price, 29, TEXT, align="center", max_width=col - 24, min_size=24)
+    canvas.card(pad, 432, width, 78)
+    for i, name in enumerate(("沪深300", "上证50", "中证500", "中证1000")):
+        center = pad + (i + .5) * width / 4
+        canvas.text(center, 445, name, 28, MUTED, align="center")
+        canvas.text(center, 478, _pct(quotes, name), 32, _tone(_change(quotes, name)), "medium", "center", max_width=232, min_size=26)
+        if i:
+            canvas.line(pad + i * width / 4, 446, pad + i * width / 4, 496)
+
+    canvas.card(pad, 528, width, 144)
+    canvas.heading(50, 546, "市场涨跌家数")
+    b = brief.breadth
+    stats = (("上涨", str(b.up) if b else "—", RED), ("下跌", str(b.down) if b else "—", GREEN), ("沪深成交额", fmt_amount(brief.turnover), TEXT))
+    for i, (label, value, color) in enumerate(stats):
+        x = 50 + i * 185
+        canvas.text(x, 594, label, 27, MUTED, max_width=165, min_size=24)
+        canvas.text(x, 626, value, 39, color, "medium", max_width=165, min_size=29)
+        if i:
+            canvas.line(x - 18, 595, x - 18, 653)
+    canvas.line(620, 550, 620, 652, LINE)
+    counts = [str(count) if count is not None else "—" for count in (b.limit_up if b else None, b.limit_down if b else None, b.flat if b else None)]
+    canvas.text(644, 557, f"涨停 {counts[0]} · 跌停 {counts[1]} · 平盘 {counts[2]}", 28, max_width=384, min_size=22)
+    cursor = 644.0
+    if b and b.total > 0:
+        for count, color in ((b.up, RED), (b.down, GREEN), (b.flat, MUTED)):
+            length = 384 * count / b.total
+            if length > 0:
+                canvas.draw.rectangle((cursor, 603, cursor + length, 623), fill=color)
+            cursor += length
+    else:
+        canvas.draw.rectangle((644, 603, 1028, 623), fill=HAIR)
+    for i, (label, color) in enumerate((("上涨", RED), ("下跌", GREEN), ("平盘", MUTED))):
+        x = 644 + i * 136
+        canvas.draw.ellipse((x, 642, x + 7, 649), fill=color)
+        canvas.text(x + 15, 636, label, 24, MUTED)
+
+    canvas.card(pad, 690, 502, 394)
+    canvas.card(550, 690, 502, 394)
+    canvas.heading(50, 712, "板块表现")
+    canvas.text(508, 722, brief.sector_source, 25, MUTED, align="right", max_width=150, min_size=21)
+    canvas.heading(572, 712, "盘中看点" if brief.is_intraday else "收盘看点")
+    for label, rows, y, color in (("领涨", brief.sectors_up, 774, RED), ("领跌", brief.sectors_down, 926, GREEN)):
+        canvas.card(48, y, 462, 132, BG, 11)
+        canvas.line(140, y + 10, 140, y + 122, LINE)
+        canvas.text(94, y + 51, label, 28, color, "medium", "center")
+        for i in range(3):
+            row = rows[i] if i < len(rows) else None
+            row_y = y + 9 + i * 40
+            canvas.pair(160, row_y, 335, row.name if row else "待确认", fmt_pct(row.pct) if row else "—", 33, color=_tone(row.pct if row else None), weight="medium")
+            if i < 2:
+                canvas.line(151, row_y + 36, 497, color=LINE)
+    for i, ((title, body), y) in enumerate(zip(_observations(brief), (774, 900, 994))):
+        canvas.draw.ellipse((572, y, 612, y + 40), fill=AMBER)
+        canvas.text(592, y + 7, str(i + 1), 28, BG, "bold", "center")
+        canvas.text(630, y + 3, title, 33, TEXT, "bold")
+        canvas.paragraph(630, y + 48, body, 398, 28, 2 if i == 0 else 1, pitch=33)
+        if i < 2:
+            canvas.line(630, y + (111 if i == 0 else 78), 1028)
+
+    canvas.card(pad, 1102, width, 282)
+    canvas.heading(50, 1123, "资金流向")
+    canvas.text(1030, 1130, f"行业主力资金 · {brief.flow_source}", 25, MUTED, align="right", max_width=650, min_size=21)
+    canvas.line(421, 1171, 421, 1366, LINE)
+    label, net = _funds(brief)
+    canvas.text(62, 1173, label, 30, MUTED)
+    canvas.text(62, 1212, fmt_yi(net, signed=True), 61, _tone(net), "bold", max_width=337, min_size=42)
+    detail = " / ".join(f"{item.market} {fmt_yi(item.main, signed=True)}" for item in brief.capital) or "沪深资金数据暂缺"
+    canvas.text(62, 1281, detail, 24, MUTED, max_width=337, min_size=20)
+    cross = brief.cross
+    canvas.pair(62, 1317, 337, "南向净买入", fmt_yi(cross.south_net if cross else None, unit="亿港元", signed=True), 25, label_color=MUTED, weight="medium")
+    canvas.pair(62, 1351, 337, "北向成交额", fmt_yi(cross.north_turnover if cross else None), 25, label_color=MUTED, weight="medium")
+    for x, label, rows, color in ((442, "行业净流入", brief.sector_in, RED), (746, "行业净流出", brief.sector_out, GREEN)):
+        canvas.card(x, 1171, 284, 197, radius=10)
+        canvas.text(x + 142, 1180, label, 28, color, "medium", "center")
+        canvas.line(x + 1, 1211, x + 283, color=LINE)
+        for i in range(3):
+            row = rows[i] if i < len(rows) else None
+            y = 1228 + i * 45
+            canvas.pair(x + 13, y, 259, row.name if row else "待确认", fmt_yi(row.net, signed=True) if row else "—", 30, color=_tone(row.net if row else None))
+            if i < 2:
+                canvas.line(x + 13, y + 37, x + 271)
+
+    canvas.card(pad, 1403, width, 163)
+    canvas.heading(50, 1420, "外围参考")
+    canvas.text(1030, 1426, "涨跌幅 / 在岸汇率", 25, MUTED, align="right")
+    for i, name in enumerate(("道琼斯", "恒生指数", "纳斯达克", "恒生科技", "标普500", "在岸人民币")):
+        x, y = (50 if i % 2 == 0 else 574), 1469 + (i // 2) * 31
+        value = fmt_px(quotes[name].last, 4) if name == "在岸人民币" and name in quotes else _pct(quotes, name)
+        canvas.pair(x, y, 454, name, value, 28, color=TEXT if name == "在岸人民币" else _tone(_change(quotes, name)), label_color=MUTED)
+        if i // 2 < 2:
+            canvas.line(x, y + 27, x + 454)
+    source = ("数据说明见文案" if brief.notes else "公开行情") + " · 新浪 / 腾讯 / 东财" + (" / 搜狐" if brief.turnover_comparison else "")
+    canvas.text(pad, 1585, source, 18, MUTED, max_width=570)
+    canvas.text(right, 1585, "北向仅列成交额 · 不构成投资建议", 18, MUTED, align="right", max_width=440)
 
 
-def _histogram(canvas: Canvas, x: float, y: float, w: float, buckets) -> None:
-    count = len(buckets)
-    gap = 8
-    cell = (w - gap * (count - 1)) / count
-    peak = max((bucket.count for bucket in buckets), default=1) or 1
-    chart_h = 64
-    for index, bucket in enumerate(buckets):
-        bar_h = 2 if bucket.count == 0 else max(4, chart_h * bucket.count / peak)
-        bar_x = x + index * (cell + gap)
-        color = {"up": RED, "down": GREEN, "flat": DIM}[bucket.side]
-        canvas.draw.rectangle(
-            (
-                canvas.s(bar_x),
-                canvas.s(y + chart_h - bar_h),
-                canvas.s(bar_x + cell),
-                canvas.s(y + chart_h),
-            ),
-            fill=color,
-        )
-        label_font = canvas.font("regular", 11)
-        count_font = canvas.font("medium", 11)
-        label = canvas.ellipsize(bucket.label, label_font, cell + 2)
-        count_text = str(bucket.count)
-        label_w = label_font.getlength(label) / canvas.scale
-        count_w = count_font.getlength(count_text) / canvas.scale
-        canvas.text(bar_x + max(0, (cell - label_w) / 2), y + chart_h + 8, label, label_font, DIM)
-        canvas.text(bar_x + max(0, (cell - count_w) / 2), y + chart_h + 24, count_text, count_font, MUTED)
+def _us_headline(quotes: dict[str, Quote]) -> str:
+    values = [_change(quotes, name) for name in MORNING_ABROAD[:3]]
+    if any(value is None for value in values):
+        return "美股行情待确认"
+    if all(value > 0 for value in values):
+        return "美股三大指数上涨"
+    if all(value < 0 for value in values):
+        return "美股三大指数下跌"
+    if all(value == 0 for value in values):
+        return "美股三大指数平收"
+    return "美股三大指数涨跌互现"
 
 
-def _sectors(canvas: Canvas, brief: Brief, title: str = "板块涨跌") -> None:
-    if not brief.sectors_up and not brief.sectors_down:
-        return
-    _section(canvas, title, brief.sector_source)
-    gap = 28
-    col_w = (_content_width() - gap) / 2
-    left_rows = [(item.name, fmt_pct(item.pct), item.pct, f"领涨  {item.leader}" if item.leader else "") for item in brief.sectors_up]
-    right_rows = [(item.name, fmt_pct(item.pct), item.pct, f"领跌  {item.leader}" if item.leader else "") for item in brief.sectors_down]
-    top = canvas.y
-    _column_bars(canvas, canvas.pad, top, col_w, "涨幅居前", left_rows)
-    height = _column_bars(canvas, canvas.pad + col_w + gap, top, col_w, "跌幅居前", right_rows, measure_only=False)
-    left_height = _column_bars(canvas, canvas.pad, top, col_w, "涨幅居前", left_rows, measure_only=True)
-    canvas.y = top + max(height, left_height)
-
-
-def _column_bars(
-    canvas: Canvas,
-    x: float,
-    y: float,
-    width: float,
-    title: str,
-    rows: list[tuple[str, str, float, str]],
-    measure_only: bool = False,
-) -> float:
-    cursor = y
-    if title:
-        if not measure_only:
-            canvas.text(x, cursor, title, canvas.font("regular", 13), AMBER)
-        cursor += 24
-    peak = max((abs(value) for _, _, value, _ in rows), default=1) or 1
-    for name, extra, value, leader in rows:
-        color = _tone(value)
-        if not measure_only:
-            canvas.text(x, cursor, canvas.ellipsize(name, canvas.font("medium", 15), width - 84), canvas.font("medium", 15), TEXT)
-            canvas.text_right(x + width, cursor, extra, canvas.font("medium", 15), color)
-        cursor += 22
-        if not measure_only:
-            canvas.round(x, cursor, width, 6, HAIR, radius=3)
-            fill_w = max(4, width * abs(value) / peak)
-            canvas.draw.rectangle((canvas.s(x), canvas.s(cursor), canvas.s(x + fill_w), canvas.s(cursor + 6)), fill=color)
-        cursor += 12
-        if leader:
-            if not measure_only:
-                canvas.text(x, cursor, canvas.ellipsize(leader, canvas.font("regular", 12), width), canvas.font("regular", 12), DIM)
-            cursor += 18
-        cursor += 8
-    return cursor - y
-
-
-def _capital(canvas: Canvas, brief: Brief) -> None:
-    if not brief.capital and not brief.sector_in and brief.cross is None:
-        return
-    _section(canvas, "资金流向", "主力按沪市+深市")
-    if brief.capital:
-        total = _sum_capital(brief)
-        color = _tone(1 if total.main > 0 else -1 if total.main < 0 else 0)
-        canvas.text(canvas.pad, canvas.y, "沪深主力净额", canvas.font("regular", 13), DIM)
-        canvas.text(canvas.pad, canvas.y + 18, fmt_yi(total.main, signed=True), canvas.font("bold", 32), color)
-        parts = "   ".join(f"{item.market} {fmt_yi(item.main, signed=True)}" for item in brief.capital)
-        canvas.text(canvas.pad + 250, canvas.y + 28, parts, canvas.font("regular", 14), MUTED)
-        canvas.y += 64
-        mixes = (
-            ("超大单", total.super_order),
-            ("大单", total.large),
-            ("中单", total.mid),
-            ("小单", total.small),
-        )
-        cell = _content_width() / 4
-        for index, (label, value) in enumerate(mixes):
-            _stat(canvas, canvas.pad + index * cell, canvas.y, cell, label, fmt_yi(value, signed=True), _tone(value))
-        canvas.y += 62
-    if brief.sector_in or brief.sector_out:
-        gap = 28
-        col_w = (_content_width() - gap) / 2
-        top = canvas.y
-        canvas.text(canvas.pad, top, "净流入", canvas.font("regular", 13), AMBER)
-        canvas.text(canvas.pad + col_w + gap, top, "净流出", canvas.font("regular", 13), AMBER)
-        canvas.text_right(canvas.w - canvas.pad, top + 1, brief.flow_source, canvas.font("regular", 12), DIM)
-        left = [(item.name, fmt_yi(item.net, signed=True), item.net, "") for item in brief.sector_in]
-        right = [(item.name, fmt_yi(item.net, signed=True), item.net, "") for item in brief.sector_out]
-        left_h = _column_bars(canvas, canvas.pad, top + 22, col_w, "", left)
-        right_h = _column_bars(canvas, canvas.pad + col_w + gap, top + 22, col_w, "", right)
-        # _column_bars prints an empty title line of 24px. The headers are already drawn.
-        canvas.y = top + 22 + max(left_h, right_h)
-    if brief.cross:
-        canvas.gap(4)
-        cross = brief.cross
-        canvas.text(canvas.pad, canvas.y, "南向净买入", canvas.font("regular", 13), DIM)
-        canvas.text(
-            canvas.pad,
-            canvas.y + 18,
-            fmt_yi(cross.south_net, signed=True, unit="亿港元"),
-            canvas.font("bold", 24),
-            _tone(cross.south_net),
-        )
-        detail = []
-        if cross.south_sh is not None:
-            detail.append(f"港股通(沪) {fmt_yi(cross.south_sh, signed=True, unit='亿港元')}")
-        if cross.south_sz is not None:
-            detail.append(f"港股通(深) {fmt_yi(cross.south_sz, signed=True, unit='亿港元')}")
-        if cross.north_turnover is not None:
-            detail.append(f"北向成交 {fmt_amount(cross.north_turnover)}")
-        canvas.y += 54
-        if detail:
-            canvas.text(canvas.pad, canvas.y, "    ".join(detail), canvas.font("regular", 14), MUTED)
-            canvas.gap(24)
-        canvas.text(canvas.pad, canvas.y, "北向净买入不再逐日披露，这里只保留成交额。", canvas.font("regular", 12), DIM)
-        canvas.gap(28)
-
-
-def _sum_capital(brief: Brief):
-    rows = brief.capital
-    from .models import CapitalMix
-
-    return CapitalMix(
-        market="合计",
-        main=sum(item.main for item in rows),
-        super_order=sum(item.super_order for item in rows),
-        large=sum(item.large for item in rows),
-        mid=sum(item.mid for item in rows),
-        small=sum(item.small for item in rows),
+def _macro(item: NewsItem) -> tuple[str, str, str] | None:
+    # 只有标题明确包含实际值和预期时才突出宏观数字。
+    patterns = (
+        (r"(美国.*?核心PCE.*?)同比\s*([+-]?[\d.]+%)，?\s*预期\s*([+-]?[\d.]+%)", "同比"),
+        (r"(美国.*?ADP就业.*?)变动\s*([+-]?[\d.]+万人)，?\s*预期\s*([+-]?[\d.]+万人)", "就业变动"),
+        (r"(美国.*?GDP.*?)年化季环比终值\s*([+-]?[\d.]+%)，?\s*预期\s*([+-]?[\d.]+%)", "年化季环比终值"),
     )
+    for pattern, label in patterns:
+        match = re.search(pattern, item.title)
+        if match:
+            title, actual, expected = match.groups()
+            return title.removesuffix("物价指数").removesuffix("人数"), actual, f"{label} · 预期 {expected}"
+    return None
 
 
-def _quote_grid(canvas: Canvas, quotes: list[Quote], columns: int = 3) -> None:
-    if not quotes:
-        canvas.text(canvas.pad, canvas.y, "暂无", canvas.font("regular", 14), DIM)
-        canvas.gap(28)
-        return
-    width = _content_width()
-    rows = (len(quotes) + columns - 1) // columns
-    cell_w = width / columns
-    cell_h = 78
-    y0 = canvas.y
-    for index, quote in enumerate(quotes):
-        col = index % columns
-        row = index // columns
-        x = canvas.pad + col * cell_w
-        y = y0 + row * cell_h
-        name_font = canvas.font("regular", 13)
-        canvas.text(x, y, canvas.ellipsize(quote.name, name_font, cell_w - 16), name_font, DIM)
-        canvas.text(x, y + 20, fmt_px(quote.last), canvas.font("medium", 18), TEXT)
-        pct_y = y + 46
-        canvas.text(x, pct_y, fmt_pct(quote.pct), canvas.font("medium", 14), _tone(quote.pct))
-        if quote.session:
-            session_x = x + canvas.font("medium", 14).getlength(fmt_pct(quote.pct)) / canvas.scale + 8
-            canvas.text(session_x, pct_y + 1, quote.session, canvas.font("regular", 12), DIM)
-    canvas.y = y0 + rows * cell_h + 8
+def _morning(canvas: Canvas, brief: Brief) -> None:
+    pad, right, width, gap = 56, 1024, 968, 20
+    day = brief.edition_date()
+    quotes = _quotes(brief)
+    canvas.text(pad, 34, "INFOUPDATES", 28, AMBER, "bold")
+    canvas.text(right, 34, china_time(brief.generated_at).strftime("生成%m.%d %H:%M CST"), 24, MUTED, align="right")
+    canvas.text(pad, 89, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · A股早盘精选", 51, TEXT, "bold", max_width=width, min_size=43)
+    reference = "盘中行情" if brief.is_intraday else "收盘"
+    canvas.text(pad, 177, f"参考{brief.trade_date:%m月%d日}{reference} · 美日韩 / 要闻 / 关注", 34, MUTED, max_width=width, min_size=29)
+    canvas.card(pad, 236, width, 188)
+    canvas.draw.rounded_rectangle((pad, 260, pad + 5, 382), radius=2, fill=AMBER)
+    canvas.text(pad + 28, 259, "外盘概览", 30, AMBER)
+    canvas.text(pad + 28, 300, _us_headline(quotes), 60, TEXT, "bold", max_width=width - 56, min_size=48)
+    canvas.text(pad + 28, 372, f"{brief.session_label()}A股：{brief.narrative.style} · 情绪{brief.narrative.sentiment}", 40, MUTED, max_width=width - 56, min_size=29)
+    canvas.text(pad, 443, "外盘一览", 42, TEXT, "bold")
+    canvas.text(right, 451, "美日韩 · 涨跌幅", 28, MUTED, align="right")
+    col = (width - gap) / 2
+    for i, name in enumerate(MORNING_ABROAD):
+        x, y = pad + (i % 2) * (col + gap), 505 + (i // 2) * 94
+        canvas.card(x, y, col, 80)
+        canvas.pair(x + 20, y + 20, col - 40, name, _pct(quotes, name), 40, 48, _tone(_change(quotes, name)), weight="bold")
+    canvas.text(pad, 788, market_summary(brief), 24, MUTED, max_width=width, min_size=20)
+    canvas.text(pad, 821, "隔夜要闻", 42, TEXT, "bold")
+    canvas.text(right, 829, "宏观 / 市场", 28, MUTED, align="right")
+    for i in range(3):
+        y = 884 + i * 122
+        item = brief.news[i] if i < len(brief.news) else None
+        macro = _macro(item) if item else None
+        if macro:
+            title, value, context = macro
+            canvas.pair(pad, y, width, title, value, 42, 54, AMBER, weight="bold")
+            canvas.text(pad, y + 59, context, 40, MUTED, max_width=width - 260, min_size=30)
+        else:
+            canvas.paragraph(pad, y, item.title if item else "暂无可核实要闻", width, 37, 2, weight="medium", pitch=42)
+        if item:
+            stamp = f"{china_time(item.published):%m-%d %H:%M} · {item.source}"
+            canvas.text(right, y + 86, stamp, 20, MUTED, align="right", max_width=width)
+        canvas.line(pad, y + 112, right)
+    canvas.text(pad, 1292, "下个交易日关注" if brief.preview else "今日关注", 42, TEXT, "bold")
+    canvas.text(right, 1300, f"{brief.session_label()}板块 / 资金", 28, MUTED, align="right", max_width=360)
+    watch = []
+    for rows, label in ((brief.sectors_up, "领涨"), (brief.sectors_down, "承压")):
+        item = rows[0] if rows else None
+        watch.append((item.name if item else "待确认", fmt_pct(item.pct) if item else "—", label, item.pct if item else None))
+    flow = brief.sector_in[0] if brief.sector_in else brief.sector_out[0] if brief.sector_out else None
+    watch.append((flow.name if flow else "待确认", fmt_yi(flow.net, signed=True) if flow else "—", "净流入" if flow and flow.net > 0 else "净流出" if flow and flow.net < 0 else "主力净额", flow.net if flow else None))
+    col = (width - gap * 2) / 3
+    for i, (name, value, label, change) in enumerate(watch):
+        x = pad + i * (col + gap)
+        canvas.card(x, 1355, col, 128)
+        canvas.text(x + 20, 1376, name, 40, max_width=col - 40, min_size=29)
+        canvas.pair(x + 20, 1430, col - 40, value, label, 44, 26, MUTED, _tone(change), weight="medium", gap=10)
+    canvas.line(pad, 1510, right, color=AMBER, width=2)
+    canvas.text(pad, 1534, f"公开行情 · {brief.trade_date:%Y.%m.%d} A股参考 · 新浪 / 腾讯 / 东财 / 见闻", 26, MUTED, max_width=width, min_size=23)
+    status = "数据缺失或备用来源详情见同名文案。" if brief.notes else "公开行情可能延迟。"
+    canvas.text(pad, 1576, status + "不构成投资建议。", 26, MUTED, max_width=width, min_size=23)
 
 
-def _morning_abroad(canvas: Canvas, brief: Brief) -> None:
-    by_name = {quote.name: quote for quote in brief.overseas}
-    quotes = [by_name[name] for name in MORNING_ABROAD if name in by_name]
-    _section(canvas, "隔夜外盘", "美日韩")
-    _quote_grid(canvas, quotes, columns=3)
-    canvas.gap(8)
-
-
-def _overseas(canvas: Canvas, brief: Brief) -> None:
-    quotes = list(brief.overseas) + list(brief.fx)
-    if not quotes:
-        return
-    _section(canvas, "外围市场", "收盘价")
-    _quote_grid(canvas, quotes, columns=3)
-    canvas.gap(8)
-
-
-def _news(canvas: Canvas, brief: Brief, title: str) -> None:
-    _section(canvas, title, "见闻 / 东财")
-    if not brief.news:
-        canvas.text(canvas.pad, canvas.y, "这一时段没有筛出重要快讯。", canvas.font("regular", 15), DIM)
-        canvas.gap(28)
-        return
-    body = canvas.font("regular", 16)
-    for item in brief.news:
-        lines = canvas.wrap(item.title, body, _content_width() - 92, 2)
-        row_h = max(40, 8 + len(lines) * 24)
-        canvas.text(canvas.pad, canvas.y, item.published.strftime("%H:%M"), canvas.font("medium", 14), AMBER)
-        canvas.text(canvas.pad, canvas.y + 20, item.source, canvas.font("regular", 12), DIM)
-        for index, line in enumerate(lines):
-            canvas.text(canvas.pad + 84, canvas.y + index * 24, line, body, TEXT)
-        canvas.y += row_h
-        canvas.rule()
-        canvas.gap(10)
-    canvas.gap(6)
-
-
-def _watch(canvas: Canvas, brief: Brief) -> None:
-    if not brief.narrative.watch:
-        return
-    _section(canvas, "今日关注")
-    for index, item in enumerate(brief.narrative.watch, start=1):
-        canvas.text(canvas.pad, canvas.y, f"{index:02d}", canvas.font("bold", 16), AMBER)
-        lines = canvas.wrap(item, canvas.font("regular", 16), _content_width() - 48, 2)
-        for line_index, line in enumerate(lines):
-            canvas.text(canvas.pad + 40, canvas.y + line_index * 24, line, canvas.font("regular", 16), TEXT)
-        canvas.y += max(28, len(lines) * 24) + 10
-    canvas.gap(8)
-
-
-def _footer(canvas: Canvas, brief: Brief) -> None:
-    canvas.gap(6)
-    canvas.rule(AMBER)
-    canvas.gap(14)
-    canvas.text(canvas.pad, canvas.y, "数据  新浪财经  ·  东方财富  ·  华尔街见闻", canvas.font("regular", 12), DIM)
-    canvas.text_right(
-        canvas.w - canvas.pad,
-        canvas.y,
-        brief.generated_at.astimezone(brief.generated_at.tzinfo).strftime("%m-%d %H:%M CST"),
-        canvas.font("regular", 12),
-        DIM,
-    )
-    canvas.gap(20)
-    canvas.text(canvas.pad, canvas.y, "公开行情可能延迟。只做信息整理，不构成投资建议。", canvas.font("regular", 12), DIM)
-    if brief.notes:
-        canvas.gap(18)
-        canvas.text(canvas.pad, canvas.y, "  ".join(brief.notes), canvas.font("regular", 12), DIM)
-    canvas.gap(28)
-
-
-def _draw(brief: Brief) -> Image.Image:
+def render_png(brief: Brief, path: Path) -> Path:
     canvas = Canvas()
-    _masthead(canvas, brief)
-    _direction(canvas, brief)
-    if brief.kind == "close":
-        _tape(canvas, brief)
-        _sentiment(canvas, brief)
-        _sectors(canvas, brief)
-        _capital(canvas, brief)
-        _overseas(canvas, brief)
+    canvas.draw.rectangle((0, 0, WIDTH, 6), fill=AMBER)
+    if brief.kind == "morning":
+        _morning(canvas, brief)
     else:
-        label = brief.session_label()
-        _tape(canvas, brief, f"{label}指数")
-        _sectors(canvas, brief, f"{label}板块")
-        _morning_abroad(canvas, brief)
-        _news(canvas, brief, "隔夜要闻")
-        _watch(canvas, brief)
-    _footer(canvas, brief)
-    return canvas.finish()
-
-
-def render_png(brief: Brief, path: str | Path) -> Path:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    _draw(brief).save(destination, format="PNG", optimize=True)
-    return destination
+        _close(canvas, brief)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.image.save(path, optimize=True)
+    return path

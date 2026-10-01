@@ -254,9 +254,9 @@ class RenderTests(unittest.TestCase):
                     self.assertIn("A股收盘综述｜9月30日 周三", copy)
                     self.assertNotIn("盘后要闻", copy)
                 else:
-                    self.assertIn("A股早盘｜10月1日 周四", copy)
-                    self.assertIn("昨日情绪", copy)
-                    self.assertIn("今日关注", copy)
+                    self.assertIn("A股早盘｜10月8日 周四", copy)
+                    self.assertIn("9月30日情绪", copy)
+                    self.assertIn("下个交易日关注", copy)
 
 
 if __name__ == "__main__":

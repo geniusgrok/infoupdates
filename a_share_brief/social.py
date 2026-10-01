@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
 from .models import Brief, Quote
+from .narrative import market_summary
 from .parse import INDEX_ORDER
 
 MORNING_ABROAD = ("道琼斯", "纳斯达克", "标普500", "日经225", "韩国KOSPI", "韩国KOSDAQ")
@@ -53,6 +54,9 @@ def _capital_lines(brief: Brief) -> list[str]:
     if brief.main_net is not None:
         detail = "  ".join(f"{item.market}{fmt_yi(item.main, signed=True)}" for item in brief.capital)
         lines.append(f"沪深主力 {fmt_yi(brief.main_net, signed=True)}" + (f"（{detail}）" if detail else ""))
+    else:
+        for item in brief.capital:
+            lines.append(f"{item.market}主力 {fmt_yi(item.main, signed=True)}")
     if brief.sector_in:
         lines.append("净流入  " + "  ".join(f"{item.name}{fmt_yi(item.net, signed=True)}" for item in brief.sector_in[:3]))
     if brief.sector_out:
@@ -69,17 +73,18 @@ def _close_copy(brief: Brief) -> str:
         _dated_title(brief),
         "",
         f"{brief.narrative.style}，情绪{brief.narrative.sentiment}。",
+        market_summary(brief),
         brief.narrative.summary,
         "",
         "主要指数",
         *_quote_lines(_pick(brief, INDEX_ORDER, brief.indices)),
     ]
-    if brief.turnover:
+    if brief.turnover is not None:
         blocks.append(f"沪深成交额 {fmt_amount(brief.turnover)}")
     if brief.breadth:
         breadth = brief.breadth
         blocks.append(
-            f"上涨{breadth.up}家，下跌{breadth.down}家，平{breadth.flat}家，涨停{breadth.limit_up}，跌停{breadth.limit_down}"
+            f"上涨{breadth.up}家，下跌{breadth.down}家，平{breadth.flat}家，涨停{breadth.limit_up if breadth.limit_up is not None else '—'}，跌停{breadth.limit_down if breadth.limit_down is not None else '—'}"
         )
     sectors = _sector_lines(brief)
     if sectors:
@@ -98,12 +103,15 @@ def _close_copy(brief: Brief) -> str:
 
 
 def _morning_copy(brief: Brief) -> str:
+    reference = "盘中行情" if brief.is_intraday else "收盘"
+    target = "下个交易日" if brief.preview else "今天"
     blocks = [
         _dated_title(brief),
-        f"对照{brief.trade_date.month}月{brief.trade_date.day}日收盘，看隔夜美日韩和今天该盯的板块。",
+        f"对照{brief.trade_date.month}月{brief.trade_date.day}日{reference}，看海外行情和{target}该盯的板块。",
         "",
         f"{brief.session_label()}情绪",
         f"{brief.narrative.style}，情绪{brief.narrative.sentiment}。",
+        market_summary(brief),
         brief.narrative.summary,
         "",
         f"{brief.session_label()}指数",
@@ -112,7 +120,7 @@ def _morning_copy(brief: Brief) -> str:
     if brief.breadth:
         breadth = brief.breadth
         blocks.append(
-            f"上涨{breadth.up}家，下跌{breadth.down}家，涨停{breadth.limit_up}，跌停{breadth.limit_down}"
+            f"上涨{breadth.up}家，下跌{breadth.down}家，涨停{breadth.limit_up if breadth.limit_up is not None else '—'}，跌停{breadth.limit_down if breadth.limit_down is not None else '—'}"
         )
     sectors = _sector_lines(brief)
     if sectors:
@@ -126,7 +134,7 @@ def _morning_copy(brief: Brief) -> str:
         for item in brief.news:
             blocks.append(f"{item.published.strftime('%H:%M')}  {item.title}")
     if brief.narrative.watch:
-        blocks.extend(["", "今日关注"])
+        blocks.extend(["", "下个交易日关注" if brief.preview else "今日关注"])
         for index, item in enumerate(brief.narrative.watch, start=1):
             blocks.append(f"{index}. {item}")
     blocks.extend(["", *_notes(brief), "公开行情可能延迟，只做信息整理，不构成投资建议。"])

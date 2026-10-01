@@ -5,11 +5,11 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from .client import fetch_text
-from .models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, SectorFlow, SectorMove
+from .models import Breadth, CapitalMix, CrossBorder, NewsItem, Quote, SectorFlow, SectorMove, TurnoverComparison
 from .parse import (
     INDEX_ORDER,
     OVERSEAS_ORDER,
@@ -29,6 +29,7 @@ from .parse import (
     parse_sina_board_money,
     parse_sina_bundle,
     parse_sina_industries,
+    parse_sohu_turnover,
     parse_us_index,
     INDEX_NAMES,
 )
@@ -72,6 +73,7 @@ class MarketData:
     sector_source: str = "新浪行业"
     flow_source: str = "东财行业"
     notes: list[str] = field(default_factory=list)
+    turnover_comparison: TurnoverComparison | None = None
 
 
 def _clean(text: str) -> str:
@@ -281,22 +283,28 @@ def _cross_row(url: str) -> dict | None:
     return _first_row(json.loads(fetch_text(url, EM, timeout=12, retries=0)))
 
 
-def fetch_cross_border() -> CrossBorder:
+def fetch_cross_border(trade_day: str = "") -> CrossBorder:
+    day_filter = "&filter=" + quote(f"(TRADE_DATE='{trade_day}')") if trade_day else ""
     north_url = (
         "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_MUTUAL_DEALAMT"
         "&columns=ALL&pageNumber=1&pageSize=1&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB"
-    )
+    ) + day_filter
     north = _try("北向成交", lambda: _cross_row(north_url))
+    if north and trade_day and str(north.get("TRADE_DATE") or "")[:10] != trade_day:
+        north = None
     south_rows: dict[str, dict] = {}
     for kind in ("002", "004", "006"):
+        filters = f'(MUTUAL_TYPE="{kind}")'
+        if trade_day:
+            filters += f"(TRADE_DATE='{trade_day}')"
         url = (
             "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_MUTUAL_DEAL_HISTORY"
             "&columns=TRADE_DATE,NET_DEAL_AMT,MUTUAL_TYPE"
-            f"&filter=(MUTUAL_TYPE%3D%22{kind}%22)&pageNumber=1&pageSize=1"
+            f"&filter={quote(filters)}&pageNumber=1&pageSize=1"
             "&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB"
         )
         row = _try(f"南向{kind}", lambda url=url: _cross_row(url))
-        if row:
+        if row and (not trade_day or str(row.get("TRADE_DATE") or "")[:10] == trade_day):
             south_rows[kind] = row
     result = parse_cross_border(north, south_rows)
     if result.north_turnover is None and result.south_net is None:
@@ -381,9 +389,19 @@ def _note_for(status: str, fallback: str, missing: str) -> str | None:
 def load_indices() -> tuple[list[Quote], str | None]:
     primary = _try("新浪指数", _indices_sina) or []
     secondary: list[Quote] = []
+    hero = next((quote for quote in primary if quote.name == "上证指数"), None)
+    trade_day = hero.trade_day if hero else ""
+    if trade_day:
+        primary = [quote for quote in primary if quote.trade_day == trade_day]
     names = {quote.name for quote in primary}
-    if any(name not in names for name in INDEX_ORDER):
+    if not trade_day or any(name not in names for name in INDEX_ORDER):
         secondary = _try("腾讯指数", _indices_qq) or []
+    if not trade_day:
+        hero = next((quote for quote in secondary if quote.name == "上证指数"), None)
+        trade_day = hero.trade_day if hero else ""
+    if trade_day:
+        primary = [quote for quote in primary if quote.trade_day == trade_day]
+        secondary = [quote for quote in secondary if quote.trade_day == trade_day]
     merged, status = combine_quotes(primary, secondary, INDEX_ORDER, required="上证指数")
     return merged, _note_for(status, "指数改用腾讯行情", "指数暂缺")
 
@@ -432,12 +450,12 @@ def load_flows() -> tuple[list[SectorFlow], list[SectorFlow], str, str | None]:
     return [], [], "东财行业", "行业资金暂缺"
 
 
-def load_capital() -> tuple[list[CapitalMix], str | None]:
+def load_capital(trade_day: str | None = None) -> tuple[list[CapitalMix], str | None]:
     eastmoney: list[CapitalMix] = []
     complete = True
     for secid, market in (("1.000001", "沪市"), ("0.399001", "深市")):
         parsed = _try(f"{market}东财资金", lambda secid=secid, market=market: _capital_em(secid, market))
-        if parsed:
+        if parsed and (not trade_day or parsed.trade_day == trade_day):
             eastmoney.append(parsed)
         else:
             complete = False
@@ -446,34 +464,48 @@ def load_capital() -> tuple[list[CapitalMix], str | None]:
     tencent: list[CapitalMix] = []
     for code, market in (("sh000001", "沪市"), ("sz399001", "深市")):
         parsed = _try(f"{market}腾讯资金", lambda code=code, market=market: _capital_qq(code, market))
-        if parsed:
+        if parsed and (not trade_day or parsed.trade_day == trade_day):
             tencent.append(parsed)
     if len(tencent) == 2:
         return tencent, "主力资金改用腾讯行情"
     if eastmoney:
-        return eastmoney, None
+        missing = " / ".join(market for market in ("沪市", "深市") if not any(item.market == market for item in eastmoney))
+        return eastmoney, f"{missing}主力资金暂缺"
     if tencent:
-        return tencent, "主力资金改用腾讯行情"
+        missing = " / ".join(market for market in ("沪市", "深市") if not any(item.market == market for item in tencent))
+        return tencent, f"主力资金改用腾讯行情；{missing}主力资金暂缺"
     return [], "主力资金暂缺"
+
+
+def load_turnover_comparison(trade_date: date) -> TurnoverComparison | None:
+    start = (trade_date - timedelta(days=30)).strftime("%Y%m%d")
+    end = trade_date.strftime("%Y%m%d")
+    url = f"https://q.stock.sohu.com/hisHq?code=zs_000001&start={start}&end={end}&stat=1&order=D&period=d"
+    return _try("沪市成交额比较", lambda: parse_sohu_turnover(
+        json.loads(fetch_text(url, "https://q.stock.sohu.com/", encoding="gb18030", timeout=12, retries=0)),
+        trade_date,
+    ))
 
 
 def load_market() -> MarketData:
     indices, index_note = load_indices()
     notes = [index_note] if index_note else []
     hero = next((quote for quote in indices if quote.name == "上证指数"), None)
-    if hero and hero.trade_day:
-        day = hero.trade_day.replace("-", "")
-    else:
-        day = datetime.now(CST).strftime("%Y%m%d")
+    try:
+        trade_date = date.fromisoformat(hero.trade_day) if hero and hero.trade_day else None
+    except ValueError:
+        trade_date = None
+    day = trade_date.strftime("%Y%m%d") if trade_date else ""
 
     jobs = {
         "overseas": load_overseas,
         "sectors": load_sectors,
         "flows": load_flows,
-        "capital": load_capital,
-        "breadth": lambda: _try("涨跌分布", lambda: _breadth(day)),
-        "cross": lambda: _try("跨境资金", fetch_cross_border),
+        "capital": lambda: load_capital(trade_date.isoformat()) if trade_date else ([], "主力资金暂缺"),
+        "breadth": lambda: _try("涨跌分布", lambda: _breadth(day)) if day else None,
+        "cross": lambda: _try("跨境资金", lambda: fetch_cross_border(trade_date.isoformat())) if trade_date else None,
         "news": lambda: _try("快讯", _news),
+        "turnover_comparison": lambda: load_turnover_comparison(trade_date) if trade_date else None,
     }
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(fn): name for name, fn in jobs.items()}
@@ -498,6 +530,8 @@ def load_market() -> MarketData:
         notes.append("跨境资金暂缺")
     if not results.get("news"):
         notes.append("要闻暂缺")
+    if results.get("turnover_comparison") is None:
+        notes.append("沪市成交额比较暂缺")
 
     return MarketData(
         indices=indices,
@@ -515,4 +549,5 @@ def load_market() -> MarketData:
         cross=results.get("cross"),
         news=results.get("news") or [],
         notes=notes,
+        turnover_comparison=results.get("turnover_comparison"),
     )

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
+from math import isfinite
 from .format import million_to_ccy
-from .models import Breadth, BreadthBucket, CapitalMix, CrossBorder, Quote, SectorFlow, SectorMove
+from .models import Breadth, BreadthBucket, CapitalMix, CrossBorder, Quote, SectorFlow, SectorMove, TurnoverComparison
 
 SINA_RE = re.compile(r'var hq_str_([A-Za-z0-9_]+)="([^"]*)"')
 
@@ -25,8 +27,24 @@ ROMAN = str.maketrans({"Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV", "Ⅴ"
 def _clean_label(name: str) -> str:
     return name.translate(ROMAN).strip()
 
+
+def _optional_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _date_stamp(value: object) -> str:
+    stamp = str(value or "")[:10].replace("/", "-")
+    try:
+        return date.fromisoformat(stamp).isoformat()
+    except ValueError:
+        return ""
+
 BREADTH_GROUPS: list[tuple[str, str, range]] = [
-    ("跌停", "down", range(-30, -10)),
+    ("<-10%", "down", range(-30, -10)),
     ("-10~-7", "down", range(-10, -6)),
     ("-6~-3", "down", range(-6, -2)),
     ("-2~-1", "down", range(-2, 0)),
@@ -34,7 +52,7 @@ BREADTH_GROUPS: list[tuple[str, str, range]] = [
     ("+1~2", "up", range(1, 3)),
     ("+3~6", "up", range(3, 7)),
     ("+7~10", "up", range(7, 11)),
-    ("涨停", "up", range(11, 30)),
+    (">10%", "up", range(11, 30)),
 ]
 
 
@@ -46,13 +64,7 @@ def _floats(parts: list[str], start: int, count: int) -> list[float | None]:
     values: list[float | None] = []
     for offset in range(count):
         index = start + offset
-        if index >= len(parts) or parts[index] in {"", "--", "-"}:
-            values.append(None)
-            continue
-        try:
-            values.append(float(parts[index]))
-        except ValueError:
-            values.append(None)
+        values.append(_optional_float(parts[index]) if index < len(parts) else None)
     return values
 
 
@@ -64,16 +76,18 @@ def parse_cn_index(symbol: str, body: str) -> Quote | None:
         return None
     numbers = _floats(parts, 1, 9)
     open_, prev, last, high, low = numbers[:5]
-    amount = numbers[8]
+    amount = numbers[8] if numbers[8] is not None and numbers[8] >= 0 else None
     if last is None or last <= 0:
         return None
     pct = ((last - prev) / prev * 100) if prev else None
     change = (last - prev) if prev is not None else None
     trade_day = ""
+    session = ""
     for part in parts:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
-            trade_day = part
+            trade_day = _date_stamp(part)
             break
+    session = next((part for part in parts if re.fullmatch(r"\d{2}:\d{2}:\d{2}", part)), "")
     return Quote(
         symbol=symbol,
         name=INDEX_NAMES.get(symbol, parts[0] or symbol),
@@ -86,6 +100,7 @@ def parse_cn_index(symbol: str, body: str) -> Quote | None:
         prev_close=prev,
         amount=amount,
         trade_day=trade_day,
+        session=session,
     )
 
 
@@ -95,11 +110,10 @@ def parse_us_index(symbol: str, body: str, name: str) -> Quote | None:
     parts = body.split(",")
     if len(parts) < 5:
         return None
-    try:
-        last = float(parts[1])
-        pct = float(parts[2])
-        change = float(parts[4])
-    except ValueError:
+    last = _optional_float(parts[1])
+    pct = _optional_float(parts[2])
+    change = _optional_float(parts[4])
+    if last is None or last <= 0:
         return None
     session = next((part for part in parts if "EDT" in part or "EST" in part), parts[3])
     session = _short_us_session(session)
@@ -135,15 +149,8 @@ def parse_hk_index(symbol: str, body: str, name: str) -> Quote | None:
     parts = body.split(",")
     if len(parts) < 9:
         return None
-    try:
-        open_ = float(parts[2])
-        prev = float(parts[3])
-        high = float(parts[4])
-        low = float(parts[5])
-        last = float(parts[6])
-        change = float(parts[7])
-        pct = float(parts[8])
-    except ValueError:
+    open_, prev, high, low, last, change, pct = _floats(parts, 2, 7)
+    if last is None or last <= 0:
         return None
     session = ""
     for part in parts:
@@ -172,11 +179,8 @@ def parse_nikkei(symbol: str, body: str, name: str = "日经225") -> Quote | Non
     parts = body.split(",")
     if len(parts) < 4:
         return None
-    try:
-        last = float(parts[1])
-        change = float(parts[2])
-        pct = float(parts[3])
-    except ValueError:
+    last, change, pct = _floats(parts, 1, 3)
+    if last is None or last <= 0:
         return None
     session = ""
     for part in parts:
@@ -196,16 +200,10 @@ def parse_fx(symbol: str, body: str, name: str) -> Quote | None:
         return None
     if name_at < 1:
         return None
-    try:
-        last = float(parts[name_at - 1])
-    except ValueError:
+    last = _optional_float(parts[name_at - 1])
+    if last is None or last <= 0:
         return None
-    pct = None
-    if name_at + 1 < len(parts):
-        try:
-            pct = float(parts[name_at + 1])
-        except ValueError:
-            pct = None
+    pct = _optional_float(parts[name_at + 1]) if name_at + 1 < len(parts) else None
     session = parts[0][:5] if re.match(r"\d{2}:\d{2}", parts[0]) else ""
     label = "在岸人民币" if "离岸" not in name and symbol.endswith("cny") else name
     if "离岸" in parts[name_at]:
@@ -219,17 +217,13 @@ def parse_cme_future(symbol: str, body: str, fallback: str) -> Quote | None:
     parts = body.split(",")
     if len(parts) < 9:
         return None
-    try:
-        last = float(parts[0])
-    except ValueError:
+    last = _optional_float(parts[0])
+    if last is None or last <= 0:
         return None
     prev = None
     for index in (8, 7):
-        try:
-            candidate = float(parts[index])
-        except ValueError:
-            continue
-        if candidate > 0 and abs(candidate - last) / candidate < 0.2:
+        candidate = _optional_float(parts[index])
+        if candidate is not None and candidate > 0 and abs(candidate - last) / candidate < 0.2:
             prev = candidate
             break
     pct = ((last - prev) / prev * 100) if prev else None
@@ -250,9 +244,8 @@ def parse_sina_industries(text: str, limit: int = 5) -> tuple[list[SectorMove], 
         parts = str(raw).split(",")
         if len(parts) < 6 or parts[1] in SKIP_SECTORS:
             continue
-        try:
-            pct = float(parts[5])
-        except ValueError:
+        pct = _optional_float(parts[5])
+        if pct is None:
             continue
         leader = parts[12] if len(parts) > 12 else ""
         if leader.startswith(("*ST", "ST")):
@@ -265,9 +258,8 @@ def parse_fflow_line(market: str, line: str) -> CapitalMix | None:
     parts = line.split(",")
     if len(parts) < 6:
         return None
-    try:
-        main, small, mid, large, super_order = (float(parts[index]) for index in range(1, 6))
-    except ValueError:
+    main, small, mid, large, super_order = _floats(parts, 1, 5)
+    if any(value is None for value in (main, small, mid, large, super_order)):
         return None
     return CapitalMix(
         market=market,
@@ -276,6 +268,7 @@ def parse_fflow_line(market: str, line: str) -> CapitalMix | None:
         large=large,
         mid=mid,
         small=small,
+        trade_day=_date_stamp(parts[0]),
     )
 
 
@@ -294,8 +287,8 @@ def parse_fenbu(items: list[dict], limit_up: int | None = None, limit_down: int 
         up=up,
         down=down,
         flat=flat,
-        limit_up=limit_up if limit_up is not None else counts.get(11, 0),
-        limit_down=limit_down if limit_down is not None else counts.get(-11, 0),
+        limit_up=limit_up,
+        limit_down=limit_down,
         buckets=buckets,
     )
 
@@ -304,9 +297,10 @@ def parse_industry_flows(payload: dict, limit: int = 5) -> tuple[list[SectorFlow
     diff = ((payload.get("data") or {}).get("diff")) or []
     rows: list[SectorFlow] = []
     for item in diff:
-        try:
-            net = float(item["f62"])
-        except (KeyError, TypeError, ValueError):
+        if not isinstance(item, dict):
+            continue
+        net = _optional_float(item.get("f62"))
+        if net is None:
             continue
         rows.append(SectorFlow(code=str(item.get("f12") or ""), name=_clean_label(str(item.get("f14") or "")), net=net))
     rows.sort(key=lambda item: item.net, reverse=True)
@@ -318,21 +312,26 @@ def parse_industry_flows(payload: dict, limit: int = 5) -> tuple[list[SectorFlow
 
 def parse_cross_border(north_row: dict | None, south_rows: dict[str, dict]) -> CrossBorder:
     north_turnover = None
-    if north_row and north_row.get("NF_DEAL_AMT") is not None:
-        north_turnover = million_to_ccy(float(north_row["NF_DEAL_AMT"]))
+    north_day = _date_stamp((north_row or {}).get("TRADE_DATE"))
+    south_day = _date_stamp((south_rows.get("006") or {}).get("TRADE_DATE"))
+    trade_day = south_day or north_day
+    if north_row:
+        amount = _optional_float(north_row.get("NF_DEAL_AMT"))
+        if amount is not None and amount >= 0 and (not trade_day or north_day == trade_day):
+            north_turnover = million_to_ccy(amount)
 
     def net_of(kind: str) -> float | None:
         row = south_rows.get(kind) or {}
-        amount = row.get("NET_DEAL_AMT")
-        if amount is None:
+        if south_day and _date_stamp(row.get("TRADE_DATE")) != south_day:
             return None
-        return million_to_ccy(float(amount))
+        return million_to_ccy(_optional_float(row.get("NET_DEAL_AMT")))
 
     return CrossBorder(
         north_turnover=north_turnover,
         south_net=net_of("006"),
         south_sh=net_of("002"),
         south_sz=net_of("004"),
+        trade_day=trade_day,
     )
 
 
@@ -365,7 +364,9 @@ def _stamp_index(parts: list[str]) -> int | None:
 def _split_stamp(stamp: str, kind: str) -> tuple[str, str]:
     compact = re.fullmatch(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})\d{2}", stamp)
     if compact:
-        day = f"{compact.group(1)}-{compact.group(2)}-{compact.group(3)}"
+        day = _date_stamp(f"{compact.group(1)}-{compact.group(2)}-{compact.group(3)}")
+        if not day:
+            return "", ""
         clock = f"{compact.group(4)}:{compact.group(5)}"
         if kind == "us":
             return day, f"{compact.group(2)}-{compact.group(3)} 收盘"
@@ -373,11 +374,13 @@ def _split_stamp(stamp: str, kind: str) -> tuple[str, str]:
             return day, f"{compact.group(2)}-{compact.group(3)} {clock}"
         if kind == "fx":
             return day, clock
-        return day, ""
+        return day, clock
     match = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})(?:\s+(\d{2}:\d{2}))?", stamp)
     if not match:
         return "", ""
-    day = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    day = _date_stamp(f"{match.group(1)}-{match.group(2)}-{match.group(3)}")
+    if not day:
+        return "", ""
     clock = match.group(4) or ""
     if kind == "us":
         return day, f"{match.group(2)}-{match.group(3)} 收盘"
@@ -388,7 +391,7 @@ def _split_stamp(stamp: str, kind: str) -> tuple[str, str]:
         return day, label
     if kind == "fx":
         return day, clock
-    return day, ""
+    return day, clock
 
 
 def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote | None:
@@ -397,11 +400,8 @@ def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote
     parts = body.split("~")
     if len(parts) < 6:
         return None
-    try:
-        last = float(parts[3])
-    except ValueError:
-        return None
-    if last <= 0:
+    last = _optional_float(parts[3])
+    if last is None or last <= 0:
         return None
     prev = _optional_float(parts[4])
     open_ = _optional_float(parts[5])
@@ -411,24 +411,7 @@ def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote
     stamp_at = _stamp_index(parts)
     if stamp_at is not None:
         trade_day, session = _split_stamp(parts[stamp_at], kind)
-        numbers: list[float] = []
-        for part in parts[stamp_at + 1 :]:
-            try:
-                numbers.append(float(part))
-            except ValueError:
-                if numbers:
-                    break
-                continue
-            if len(numbers) >= 4:
-                break
-        if numbers:
-            change = numbers[0]
-        if len(numbers) > 1:
-            pct = numbers[1]
-        if len(numbers) > 2:
-            high = numbers[2]
-        if len(numbers) > 3:
-            low = numbers[3]
+        change, pct, high, low = _floats(parts, stamp_at + 1, 4)
     if pct is None and prev:
         pct = (last - prev) / prev * 100
     if change is None and prev is not None:
@@ -436,10 +419,8 @@ def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote
     amount = None
     if kind == "cn" and len(parts) > 37:
         wan = _optional_float(parts[37])
-        if wan and wan > 1000:
+        if wan is not None and wan >= 0:
             amount = wan * 10000
-    if kind == "cn":
-        session = ""
     return Quote(
         symbol=symbol,
         name=name,
@@ -454,15 +435,6 @@ def parse_qq_quote(symbol: str, body: str, name: str, kind: str = "cn") -> Quote
         session=session,
         trade_day=trade_day,
     )
-
-
-def _optional_float(value: str) -> float | None:
-    if value in {"", "--", "-"}:
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
 
 
 def parse_qq_fx(symbol: str, body: str, name: str) -> Quote | None:
@@ -480,35 +452,22 @@ def parse_qq_fx(symbol: str, body: str, name: str) -> Quote | None:
     trade_day = ""
     if stamp_at is not None:
         trade_day, session = _split_stamp(parts[stamp_at], "fx")
-        small: list[float] = []
-        for part in parts[stamp_at + 1 :]:
-            value = _optional_float(part)
-            if value is None:
-                continue
-            if abs(value) < 2:
-                small.append(value)
-            if len(small) >= 2:
-                break
-        if len(small) >= 2:
-            pct = small[1]
-        elif small:
-            pct = small[0]
+        # Tencent FX puts the price change and percentage at offsets 7 and 8
+        # after the timestamp; missing fields must not shift later metrics.
+        pct = _floats(parts, stamp_at + 8, 1)[0]
     return Quote(symbol=symbol, name=name, last=last, pct=pct, session=session, trade_day=trade_day)
 
 
 def parse_qq_capital(market: str, payload: dict) -> CapitalMix | None:
     flow = ((payload.get("data") or {}).get("todayFundFlow")) or payload.get("todayFundFlow") or {}
-    try:
-        return CapitalMix(
-            market=market,
-            main=float(flow["mainNetIn"]),
-            super_order=float(flow["superFlow"]),
-            large=float(flow["bigFlow"]),
-            mid=float(flow["normalFlow"]),
-            small=float(flow["smallFlow"]),
-        )
-    except (KeyError, TypeError, ValueError):
+    values = [_optional_float(flow.get(key)) for key in ("mainNetIn", "superFlow", "bigFlow", "normalFlow", "smallFlow")]
+    if any(value is None for value in values):
         return None
+    trend = ((payload.get("data") or {}).get("todayFundTrend")) or payload.get("todayFundTrend") or {}
+    stamps = [str(row.get("time") or "") for row in trend.get("minList") or [] if isinstance(row, dict)]
+    days = [_date_stamp(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}") for stamp in stamps if re.fullmatch(r"\d{12,14}", stamp)]
+    trade_day = max((day for day in days if day), default="")
+    return CapitalMix(market, *values, trade_day=trade_day)
 
 
 def parse_qq_spark(payload: dict) -> list[float]:
@@ -517,7 +476,9 @@ def parse_qq_spark(payload: dict) -> list[float]:
     closes: list[float] = []
     for row in rows:
         try:
-            closes.append(float(row[2]))
+            close = _optional_float(row[2])
+            if close is not None and close > 0:
+                closes.append(close)
         except (IndexError, TypeError, ValueError):
             continue
     return closes
@@ -531,11 +492,11 @@ def parse_sina_board_money(text: str, limit: int = 5) -> tuple[list[SectorMove],
         name = _clean_label(str(row.get("name") or ""))
         if not name or name in SKIP_SECTORS:
             continue
-        try:
-            pct = float(row["avg_changeratio"]) * 100
-            net = float(row["netamount"])
-        except (KeyError, TypeError, ValueError):
+        pct = _optional_float(row.get("avg_changeratio"))
+        net = _optional_float(row.get("netamount"))
+        if pct is None or net is None:
             continue
+        pct *= 100
         leader = str(row.get("ts_name") or "")
         if leader.startswith(("*ST", "ST")):
             leader = ""
@@ -558,10 +519,10 @@ def _split_moves(rows: list[SectorMove], limit: int) -> tuple[list[SectorMove], 
 def merge_quotes(primary: list[Quote], secondary: list[Quote], order: tuple[str, ...] = ()) -> list[Quote]:
     chosen: dict[str, Quote] = {}
     for quote in secondary:
-        if quote.last > 0:
+        if isfinite(quote.last) and quote.last > 0:
             chosen[quote.name] = quote
     for quote in primary:
-        if quote.last > 0:
+        if isfinite(quote.last) and quote.last > 0:
             chosen[quote.name] = quote
     if not order:
         return list(chosen.values())
@@ -593,8 +554,45 @@ def parse_spark_closes(payload: list[dict]) -> list[float]:
     closes: list[float] = []
     for row in payload:
         try:
-            closes.append(float(row["close"]))
+            close = _optional_float(row["close"])
+            if close is not None and close > 0:
+                closes.append(close)
         except (KeyError, TypeError, ValueError):
             continue
     return closes
 
+
+def parse_sohu_turnover(payload: object, trade_date: date) -> TurnoverComparison | None:
+    """Read the Shanghai index's two consecutive sessions from one Sohu response.
+
+    Sohu column 7 is volume in lots; column 8 is RMB amount in ten thousands.
+    Keep missing amounts attached to their dates so an older session cannot be
+    silently substituted for the preceding trading day.
+    """
+    if not isinstance(payload, list):
+        return None
+    series = next((item for item in payload if isinstance(item, dict) and item.get("code") == "zs_000001"), None)
+    if not series or series.get("status") != 0 or not isinstance(series.get("hq"), list):
+        return None
+    amounts: dict[date, float | None] = {}
+    for row in series["hq"]:
+        if not isinstance(row, list) or not row:
+            continue
+        stamp = _date_stamp(row[0])
+        if not stamp:
+            continue
+        day = date.fromisoformat(stamp)
+        amount = _optional_float(row[8]) if len(row) > 8 else None
+        if amount is not None and amount <= 0:
+            amount = None
+        if day in amounts and amounts[day] != amount:
+            return None
+        amounts[day] = amount
+    previous_days = [day for day in amounts if day < trade_date]
+    if trade_date not in amounts or not previous_days:
+        return None
+    previous_date = max(previous_days)
+    current, previous = amounts[trade_date], amounts[previous_date]
+    if current is None or previous is None:
+        return None
+    return TurnoverComparison(trade_date, previous_date, current * 10_000, previous * 10_000)

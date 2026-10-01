@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 
-from .models import NewsItem
+from .models import CST, NewsItem, china_time, previous_trading_day
 
 BOOSTS: tuple[tuple[str, int], ...] = (
     ("收评", 36),
@@ -53,9 +53,10 @@ def score_news(item: NewsItem, *, kind: str, trade_date: date) -> float:
     noisy = any(word in title for word in NOISE)
     if noisy and not any(word in title for word in KEEP):
         score -= 30
-    if item.published.date() == trade_date:
+    published_date = china_time(item.published).date()
+    if published_date == trade_date:
         score += 6
-    elif item.published.date() < trade_date - timedelta(days=1):
+    elif published_date < trade_date - timedelta(days=1):
         score -= 20
     if kind == "morning" and any(word in title for word in ("央行", "美联储", "PCE", "ADP", "统计局", "GDP", "美股", "日本", "韩国", "日经")):
         score += 8
@@ -65,14 +66,14 @@ def score_news(item: NewsItem, *, kind: str, trade_date: date) -> float:
 
 
 def _compact(title: str) -> str:
-    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", title)
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", title).lower()
 
 
 def _duplicate(left: str, right: str) -> bool:
     a, b = _compact(left), _compact(right)
     if not a or not b:
         return False
-    if a == b or a[:14] == b[:14]:
+    if a == b:
         return True
     short, long = (a, b) if len(a) <= len(b) else (b, a)
     return len(short) >= 10 and short in long
@@ -86,23 +87,37 @@ def select_news(
     now: datetime,
     limit: int = 7,
 ) -> list[NewsItem]:
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone(timedelta(hours=8)))
+    if kind not in {"close", "morning"}:
+        raise ValueError("kind 只能是 close 或 morning")
+    if limit <= 0:
+        return []
+    now = china_time(now)
     if kind == "morning":
-        fresh_after = datetime.combine(trade_date, time(15, 0), tzinfo=now.tzinfo)
+        base_date = trade_date
+        if base_date >= now.date() and now.time() < time(15, 0):
+            try:
+                base_date = previous_trading_day(now.date())
+            except ValueError:
+                # 仅用有限新闻窗口降级；晨报标题仍由交易日历严格校验。
+                base_date = now.date() - timedelta(days=1)
+        fresh_after = datetime.combine(base_date, time(15, 0), tzinfo=CST)
     else:
         fresh_after = now - timedelta(hours=36)
     pool: list[NewsItem] = []
     for item in items:
-        if item.published < fresh_after:
+        published = china_time(item.published)
+        title = item.title.strip()
+        if published < fresh_after or published > now:
             continue
-        if kind == "morning" and any(word in item.title for word in ("收评", "午评")):
+        if kind == "morning" and any(word in title for word in ("收评", "午评")):
             continue
-        if len(item.title) < 8:
+        if len(title) < 8:
+            continue
+        if any(word in title for word in NOISE) and not any(word in title for word in KEEP):
             continue
         scored = NewsItem(
-            published=item.published,
-            title=item.title.strip(),
+            published=published,
+            title=title,
             source=item.source,
             source_score=item.source_score,
         )
