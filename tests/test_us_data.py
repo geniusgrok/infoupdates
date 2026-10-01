@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from usstock.fetch import _fetch_chart, load_market
 from usstock.models import NY, Quote
-from usstock.parse import parse_completed, parse_extended, parse_quote
+from usstock.parse import parse_completed, parse_extended, parse_overnight, parse_quote
 
 
 def stamp(day: str, clock: str = "09:30") -> int:
@@ -26,6 +26,25 @@ def chart(symbol="AAPL", *, timestamps=None, closes=None, volumes=None, asof=Non
 
 
 NOW = datetime(2026, 9, 30, 21, tzinfo=NY)
+
+
+def night_price(**overrides):
+    return {
+        "symbol": "AAPL", "currency": "USD", "marketState": "OVERNIGHT",
+        "overnightMarketPrice": {"raw": 110},
+        "overnightMarketTime": stamp("2026-09-30", "23:00"),
+        "overnightMarketSource": "BOATS Real Time Price",
+        "regularMarketPrice": {"raw": 100},
+        "regularMarketTime": stamp("2026-09-30", "16:00"),
+        "overnightMarketChangePercent": {"raw": 0.1},
+        **overrides,
+    }
+
+
+def night_html(*prices, status=200):
+    body = json.dumps({"quoteSummary": {"result": [{"price": price} for price in prices]}})
+    script = json.dumps({"status": status, "body": body})
+    return f'<script type="application/json" data-sveltekit-fetched>{script}</script>'
 
 
 class DailyParsingTests(unittest.TestCase):
@@ -123,6 +142,19 @@ class DailyParsingTests(unittest.TestCase):
         value = parse_quote(payload, "AAPL", "苹果", now=now)
         self.assertEqual(value.asof.hour, 16)
         self.assertEqual(value.asof.utcoffset().total_seconds(), -5 * 3600)
+
+    def test_dst_repeated_hour_uses_instant_for_future_quote_guard(self):
+        first_hour_now = datetime(2026, 11, 1, 1, 45, tzinfo=NY, fold=0)
+        future_second_hour = datetime(2026, 11, 1, 1, 15, tzinfo=NY, fold=1)
+        payload = chart("ES=F", asof=int(future_second_hour.timestamp()))
+        self.assertIsNone(parse_quote(payload, "ES=F", "标普期货", now=first_hour_now))
+
+        second_hour_now = datetime(2026, 11, 1, 1, 15, tzinfo=NY, fold=1)
+        past_first_hour = datetime(2026, 11, 1, 1, 45, tzinfo=NY, fold=0)
+        payload = chart("ES=F", asof=int(past_first_hour.timestamp()))
+        value = parse_quote(payload, "ES=F", "标普期货", now=second_hour_now)
+        self.assertIsNotNone(value)
+        self.assertEqual(value.asof.timestamp(), past_first_hour.timestamp())
 
     def test_future_price_change_uses_disclosed_vendor_basis(self):
         payload = chart("ES=F", last=110, closes=[80, 90], regularMarketChangePercent=10,
@@ -233,6 +265,116 @@ class ExtendedParsingTests(unittest.TestCase):
         self.assertIsNone(parse_extended(only_after_end, "AAPL", "苹果", "postmarket", now=now, daily_payload=daily))
 
 
+class OvernightParsingTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 9, 30, 23, 30, tzinfo=NY)
+
+    def parse(self, price, now=None):
+        return parse_overnight(night_html(price), "AAPL", "苹果", now=now or self.now)
+
+    def test_real_night_quote_uses_source_time_and_own_regular_close(self):
+        value = self.parse(night_price())
+        self.assertEqual(value.last, 110)
+        self.assertAlmostEqual(value.pct, 10)
+        self.assertEqual(value.session, "overnight")
+        self.assertEqual(value.source, "BOATS Real Time Price")
+        self.assertEqual(value.asof, datetime(2026, 9, 30, 23, tzinfo=NY))
+        self.assertEqual(value.previous_date, date(2026, 9, 30))
+
+    def test_quote_summary_change_fraction_is_not_mistaken_for_percentage_points(self):
+        value = self.parse(night_price(overnightMarketPrice={"raw": 333.9}, regularMarketPrice={"raw": 333.02},
+                                      overnightMarketChangePercent={"raw": 0.0026424986}))
+        self.assertAlmostEqual(value.pct, 0.264248393489873, places=8)
+
+    def test_same_edition_night_survives_midnight_and_four_am_transition(self):
+        price = night_price()
+        for now in (datetime(2026, 10, 1, 2, tzinfo=NY), datetime(2026, 10, 1, 8, tzinfo=NY)):
+            with self.subTest(now=now):
+                value = self.parse(price, now=now)
+                self.assertEqual(value.asof.date(), date(2026, 9, 30))
+                self.assertEqual(value.last, 110)
+        self.assertIsNone(self.parse(price, now=datetime(2026, 10, 1, 10, tzinfo=NY)))
+
+    def test_sunday_night_is_valid_for_monday_and_uses_friday_regular_close(self):
+        price = night_price(overnightMarketTime=stamp("2026-10-04", "22:00"),
+                            regularMarketTime=stamp("2026-10-02", "16:00"))
+        value = self.parse(price, now=datetime(2026, 10, 4, 23, tzinfo=NY))
+        self.assertEqual(value.asof.weekday(), 6)
+        self.assertEqual(value.previous_date, date(2026, 10, 2))
+        self.assertAlmostEqual(value.pct, 10)
+
+    def test_twenty_to_four_window_boundaries_are_strict(self):
+        now = datetime(2026, 10, 1, 8, tzinfo=NY)
+        for day, clock, accepted in (("2026-09-30", "19:59", False), ("2026-09-30", "20:00", True),
+                                     ("2026-10-01", "03:59", True), ("2026-10-01", "04:00", False)):
+            with self.subTest(clock=clock):
+                value = self.parse(night_price(overnightMarketTime=stamp(day, clock)), now=now)
+                self.assertEqual(value is not None, accepted)
+
+    def test_future_and_previous_night_quotes_are_rejected(self):
+        for timestamp in (stamp("2026-10-01", "01:00"), stamp("2026-09-29", "23:00")):
+            self.assertIsNone(self.parse(night_price(overnightMarketTime=timestamp)))
+
+    def test_market_state_cannot_create_or_remove_real_quote(self):
+        self.assertIsNotNone(self.parse(night_price(marketState="PRE"), now=datetime(2026, 10, 1, 8, tzinfo=NY)))
+        for field in ("overnightMarketPrice", "overnightMarketTime", "overnightMarketSource"):
+            price = night_price()
+            del price[field]
+            with self.subTest(field=field):
+                self.assertIsNone(self.parse(price))
+
+    def test_invalid_night_prices_times_and_empty_sources_are_rejected(self):
+        for raw in (0, -1, float("nan"), float("inf"), True):
+            self.assertIsNone(self.parse(night_price(overnightMarketPrice={"raw": raw})))
+        for raw in (None, float("nan"), float("inf"), True, {"raw": stamp("2026-09-30", "23:00")}):
+            self.assertIsNone(self.parse(night_price(overnightMarketTime=raw)))
+        self.assertIsNone(self.parse(night_price(overnightMarketSource=" ")))
+
+    def test_missing_stale_intraday_and_future_regular_bases_preserve_only_night_price(self):
+        for overrides in (
+            {"regularMarketPrice": {}}, {"regularMarketPrice": {"raw": float("inf")}},
+            {"regularMarketTime": stamp("2026-09-30", "15:55")},
+            {"regularMarketTime": stamp("2026-09-29", "16:00")},
+            {"regularMarketTime": stamp("2026-10-01", "16:00")},
+        ):
+            with self.subTest(overrides=overrides):
+                value = self.parse(night_price(**overrides))
+                self.assertEqual(value.last, 110)
+                self.assertIsNone(value.pct)
+                self.assertIsNone(value.previous_close)
+                self.assertIsNone(value.previous_date)
+
+    def test_symbol_and_currency_must_match_expected_quote(self):
+        self.assertIsNone(self.parse(night_price(symbol="MSFT")))
+        self.assertIsNone(self.parse(night_price(currency="EUR")))
+        html = night_html(night_price(symbol="MSFT", regularMarketPrice={"raw": 500}), night_price())
+        value = parse_overnight(html, "AAPL", "苹果", now=self.now)
+        self.assertEqual(value.previous_close, 100)
+
+    def test_malformed_siblings_do_not_hide_valid_structured_quote(self):
+        broken = '<script type="application/json" data-sveltekit-fetched>{invalid}</script>'
+        body_invalid = '<script type="application/json" data-sveltekit-fetched>{"status":200,"body":"bad"}</script>'
+        html = broken + body_invalid + night_html(night_price(symbol="MSFT")) + night_html(night_price())
+        self.assertEqual(parse_overnight(html, "AAPL", "苹果", now=self.now).last, 110)
+        self.assertIsNone(parse_overnight(broken + body_invalid, "AAPL", "苹果", now=self.now))
+
+    def test_nonfetched_script_and_failed_http_payload_are_ignored(self):
+        valid = night_html(night_price())
+        self.assertIsNone(parse_overnight(valid.replace("data-sveltekit-fetched", "data-unrelated"), "AAPL", "苹果", now=self.now))
+        self.assertIsNone(parse_overnight(night_html(night_price(), status=500), "AAPL", "苹果", now=self.now))
+
+    def test_multiple_valid_snapshots_choose_latest_real_trade_time(self):
+        old = night_price(overnightMarketPrice={"raw": 105}, overnightMarketTime=stamp("2026-09-30", "21:00"))
+        value = parse_overnight(night_html(night_price(), old), "AAPL", "苹果", now=self.now)
+        self.assertEqual(value.last, 110)
+        self.assertEqual(value.asof.hour, 23)
+
+    def test_nonfinite_computed_change_is_not_published(self):
+        value = self.parse(night_price(overnightMarketPrice={"raw": 1e300}, regularMarketPrice={"raw": 1e-300}))
+        self.assertEqual(value.last, 1e300)
+        self.assertIsNone(value.pct)
+
+
 class DataLoadingTests(unittest.TestCase):
     def test_chart_query_falls_back_to_second_yahoo_host(self):
         payload = chart("^GSPC")
@@ -258,6 +400,7 @@ class DataLoadingTests(unittest.TestCase):
         with patch.multiple("usstock.fetch", INDEX_NAMES={"^GSPC": "标普500"}, FUTURE_NAMES={},
                             MEGA_NAMES={"AAPL": "苹果"}, SECTOR_NAMES={}, MACRO_NAMES={}):
             with patch("usstock.fetch._daily", side_effect=daily), patch("usstock.fetch._extended", return_value=(None, None)), \
+                 patch("usstock.fetch._overnight", return_value=None), \
                  patch("usstock.fetch.wscn_items", side_effect=OSError("news down")), patch("usstock.fetch.em_items", return_value=[]):
                 result = load_market(now=NOW)
         self.assertIn("^GSPC", result.quotes)
@@ -266,6 +409,51 @@ class DataLoadingTests(unittest.TestCase):
         self.assertNotIn("AAPL", result.postmarket)
         self.assertTrue(any("AAPL" in note and "暂缺" in note for note in result.notes))
         self.assertTrue(any("快讯暂缺" in note for note in result.notes))
+
+    def test_night_quotes_survive_all_daily_extended_and_sibling_night_failures(self):
+        now = datetime(2026, 9, 30, 23, 30, tzinfo=NY)
+        def overnight(symbol, name, captured):
+            self.assertEqual(captured, now)
+            if symbol == "XLC":
+                raise OSError("page unavailable")
+            if symbol == "XLB":
+                return None
+            return Quote(symbol, name, 110, pct=10, asof=datetime(2026, 9, 30, 23, tzinfo=NY), session="overnight")
+        with patch.multiple("usstock.fetch", INDEX_NAMES={}, FUTURE_NAMES={}, MEGA_NAMES={"AAPL": "苹果"},
+                            SECTOR_NAMES={"XLK": "科技", "XLB": "材料", "XLC": "通信"}, MACRO_NAMES={}):
+            with patch("usstock.fetch._daily", side_effect=OSError("daily down")), \
+                 patch("usstock.fetch._extended", side_effect=OSError("extended down")), \
+                 patch("usstock.fetch._overnight", side_effect=overnight), \
+                 patch("usstock.fetch.wscn_items", return_value=[]), patch("usstock.fetch.em_items", return_value=[]):
+                result = load_market(now=now)
+        self.assertEqual(set(result.overnight), {"AAPL", "XLK"})
+        self.assertEqual(result.completed, {})
+        self.assertEqual(result.premarket, {})
+        self.assertTrue(any("XLC" in note and "夜盘行情暂缺" in note for note in result.notes))
+        self.assertTrue(any("XLB" in note and "真实夜盘行情暂缺" in note for note in result.notes))
+
+    def test_sector_etf_has_independent_real_pre_post_and_night_data(self):
+        now = datetime(2026, 9, 30, 23, 30, tzinfo=NY)
+        def extended(symbol, name, captured, daily_payload):
+            self.assertEqual(captured, now)
+            if symbol == "AAPL":
+                return None, None
+            return (Quote(symbol, name, 101, asof=datetime(2026, 9, 30, 9, tzinfo=NY), session="premarket"),
+                    Quote(symbol, name, 102, asof=datetime(2026, 9, 30, 19, tzinfo=NY), session="postmarket"))
+        def overnight(symbol, name, captured):
+            if symbol == "AAPL":
+                raise OSError("one page down")
+            return Quote(symbol, name, 103, asof=datetime(2026, 9, 30, 23, tzinfo=NY), session="overnight")
+        with patch.multiple("usstock.fetch", INDEX_NAMES={}, FUTURE_NAMES={}, MEGA_NAMES={"AAPL": "苹果"},
+                            SECTOR_NAMES={"XLF": "金融"}, MACRO_NAMES={}):
+            with patch("usstock.fetch._daily", return_value=({}, None, None)), \
+                 patch("usstock.fetch._extended", side_effect=extended), patch("usstock.fetch._overnight", side_effect=overnight), \
+                 patch("usstock.fetch.wscn_items", return_value=[]), patch("usstock.fetch.em_items", return_value=[]):
+                result = load_market(now=now)
+        self.assertEqual(result.premarket["XLF"].last, 101)
+        self.assertEqual(result.postmarket["XLF"].last, 102)
+        self.assertEqual(result.overnight["XLF"].last, 103)
+        self.assertNotIn("AAPL", result.overnight)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,14 @@ def _news_key(title: str) -> str:
     return re.sub(r'[\s，,。；;：:！？!?、“”"\'（）()\[\]]', '', title).lower()
 
 
+def _roundup_title(title: str) -> bool:
+    """排除仅栏目名和日期的汇总标题；有事件正文的标题继续保留。"""
+    compact = re.sub(r"(?:\d{4}年)?\d{1,2}月\d{1,2}日|\d{4}[./-]\d{1,2}[./-]\d{1,2}|[12]\d{7}", "", title)
+    compact = re.sub(r"(?:星期|周)[一二三四五六日天]", "", compact)
+    compact = re.sub(r"[\s|｜:：·—\-()（）]", "", compact)
+    return re.fullmatch(r"(?:华尔街见闻|华尔街)?(?:美股|美国股市)?(?:早餐|早报|晚报)", compact) is not None
+
+
 def select_news(
     items: list[NewsItem], *, kind: str, reference_date: date | None,
     now: datetime, limit: int = 6,
@@ -37,16 +45,22 @@ def select_news(
     if limit <= 0:
         return []
     now = new_york_time(now)
-    cutoff = now - timedelta(hours=36)
+    now_stamp = now.timestamp()
+    cutoff_stamp = now_stamp - 36 * 3600
     if reference_date is not None:
         reference_cutoff = session_close(reference_date) if kind == "premarket" else session_open(reference_date)
+        reference_stamp = reference_cutoff.timestamp()
+        if reference_stamp > now_stamp:
+            reference_stamp = cutoff_stamp
         # 周末/长假盘前保留前收后要闻，但不让陈旧行情无限扩大窗口。
-        cutoff = max(reference_cutoff, now - timedelta(hours=96 if kind == "premarket" else 36))
+        cutoff_stamp = max(reference_stamp, now_stamp - (96 if kind == "premarket" else 36) * 3600)
     selected: dict[str, NewsItem] = {}
     for item in items:
         title = item.title.strip()
         published = _news_time(item.published)
-        if not cutoff <= published <= now or len(title) < 8 or not re.search(r'[\u4e00-\u9fff]', title):
+        if not cutoff_stamp <= published.timestamp() <= now_stamp or len(title) < 8 or not re.search(r'[\u4e00-\u9fff]', title):
+            continue
+        if kind == "premarket" and _roundup_title(title):
             continue
         if not any(topic.lower() in title.lower() for topic in US_TOPICS):
             if not re.search(r'(?<![A-Za-z0-9])(?:AAPL|MSFT|NVDA|AMZN|GOOGL|META|TSLA)(?![A-Za-z0-9])', title, re.I):
@@ -55,9 +69,14 @@ def select_news(
         scored = NewsItem(published=published, title=title, source=item.source, source_score=item.source_score, rank=rank)
         key = _news_key(title)
         previous = selected.get(key)
-        if previous is None or (rank, published) > (previous.rank, previous.published):
+        priority = (published.timestamp(), rank) if kind == "premarket" else (rank, published.timestamp())
+        previous_priority = ((previous.published.timestamp(), previous.rank) if kind == "premarket"
+                             else (previous.rank, previous.published.timestamp())) if previous is not None else None
+        if previous is None or priority > previous_priority:
             selected[key] = scored
-    return sorted(selected.values(), key=lambda item: (-item.rank, -item.published.timestamp()))[:limit]
+    order = ((lambda item: (-item.published.timestamp(), -item.rank)) if kind == "premarket"
+             else (lambda item: (-item.rank, -item.published.timestamp())))
+    return sorted(selected.values(), key=order)[:limit]
 
 
 def _direction_headline(quotes: list[Quote], noun: str) -> str:
@@ -122,18 +141,32 @@ def activity_summary(brief: Brief) -> str:
     return f"SPY{volume_label}（{change}）"
 
 
+def fresh_futures(quotes: list[Quote], now: datetime, target: date) -> list[Quote]:
+    """盘前只使用上一常规场结束后、六小时内的真实股指期货报价。"""
+    now = new_york_time(now)
+    after = session_close(previous_trading_day(target))
+    return [quote for quote in quotes
+            if quote.session == "futures" and quote.asof is not None
+            and after <= new_york_time(quote.asof) <= now
+            and 0 <= now.timestamp() - new_york_time(quote.asof).timestamp() <= 6 * 3600]
+
+
 def build_narrative(brief: Brief) -> tuple[str, str, str]:
     core = [quote for quote in brief.indices if quote.symbol in {"^DJI", "^IXIC", "^GSPC"}]
     if brief.kind == "premarket":
-        current_futures = [quote for quote in brief.futures if quote.trade_date == brief.edition_date]
-        if brief.generated_at.date() == brief.edition_date and len(current_futures) >= 3:
-            headline = _direction_headline(current_futures, "股指期货")
-            sentiment = _mood(current_futures, [])
-            mood = f"盘前情绪{sentiment}（股指期货参考）"
+        current_futures = fresh_futures(brief.futures, brief.generated_at, brief.edition_date)
+        usable_futures = [quote for quote in current_futures if quote.pct is not None and isfinite(quote.pct)]
+        if len(usable_futures) >= 3:
+            headline = _direction_headline(usable_futures, "股指期货")
+            sentiment = _mood(usable_futures, [])
+            mood = f"盘前情绪{sentiment}（最新股指期货参考）"
         else:
-            headline = _direction_headline(core, "前收三大指数")
-            sentiment = _mood(core, brief.sectors)
-            mood = f"前收市场情绪{sentiment}（指数与板块ETF参考）"
+            current_stocks = [quote for quote in brief.stocks
+                              if quote.session in {"overnight", "premarket"}]
+            usable_stocks = [quote for quote in current_stocks if quote.pct is not None and isfinite(quote.pct)]
+            headline = _direction_headline(usable_stocks, "最新大型科技股")
+            sentiment = _mood(usable_stocks, [])
+            mood = f"盘前情绪{sentiment}（最新大型科技股参考）" if len(usable_stocks) >= 3 else "盘前情绪待确认（最新延长交易行情不足）"
         return headline, sentiment, f"{mood}，{activity_summary(brief)}。"
     headline = _direction_headline(core, "三大指数")
     sentiment = _mood(core, brief.sectors)

@@ -17,10 +17,18 @@ def _available(quotes: list[Quote]) -> dict[str, Quote]:
     return {quote.symbol: quote for quote in quotes if isfinite(quote.last) and quote.last > 0}
 
 
+def _current(quotes: list[Quote], brief: Brief) -> dict[str, Quote]:
+    available = _available(quotes)
+    if brief.kind == "premarket":
+        return {symbol: quote for symbol, quote in available.items()
+                if quote.session in {"overnight", "premarket", "postmarket"} and quote.asof is not None}
+    return available
+
+
 def _stamp(quote: Quote | None, brief: Brief) -> str:
     if quote is None or quote.asof is None:
         return "时点待确认"
-    phase = {"premarket": "盘前", "postmarket": "盘后", "reference": "参考", "futures": "期货"}.get(quote.session)
+    phase = {"premarket": "盘前", "postmarket": "盘后", "overnight": "夜盘", "reference": "参考", "futures": "期货"}.get(quote.session)
     if phase is None:
         phase = "前收" if quote.trade_date != brief.edition_date else "常规"
         if brief.kind == "postmarket" and brief.complete and quote.trade_date == brief.edition_date:
@@ -104,33 +112,27 @@ def _primary(canvas: Canvas, brief: Brief) -> None:
 
     canvas.card(28, 432, 1024, 78)
     if brief.kind == "premarket":
-        quotes = _available(brief.indices)
-        for i, (symbol, name) in enumerate(INDEX_NAMES.items()):
-            center = 28 + (i + .5) * 256
-            # The strip explicitly identifies the completed reference session.
-            quote = quotes.get(symbol)
-            day = f"{quote.trade_date:%m.%d}前收" if quote and quote.trade_date else "前收待确认"
-            canvas.text(center, 443, f"{name} · {day}", 23, MUTED, align="center", max_width=232, min_size=19)
-            canvas.text(center, 477, fmt_pct(quote.pct if quote else None), 30,
-                        _tone(quote.pct if quote else None), "medium", "center", max_width=232, min_size=24)
-            if i:
-                canvas.line(28 + i * 256, 446, 28 + i * 256, 496)
+        stocks, sectors = _current(brief.stocks, brief), _current(brief.sectors, brief)
+        count = sum(symbol in stocks for symbol in MEGA_NAMES)
+        stats = (("最新科技股", _distribution(list(stocks.values()))),
+                 ("最新板块ETF", _distribution(list(sectors.values()))),
+                 ("科技股报价", f"{count} / {len(MEGA_NAMES)}家"))
     else:
         sectors = [q for q in brief.sectors if q.pct is not None and isfinite(q.pct)]
         strongest = max(sectors, key=lambda q: q.pct) if sectors else None
         stats = (("四大指数", _distribution(brief.indices)),
                  ("七大科技", _distribution(brief.stocks)),
                  ("ETF相对最强", f"{strongest.name} {fmt_pct(strongest.pct)}" if strongest else "待确认"))
-        for i, (label, value) in enumerate(stats):
-            center = 28 + (i + .5) * 1024 / 3
-            canvas.text(center, 444, label, 26, MUTED, align="center", max_width=315)
-            canvas.text(center, 472, value, 29, TEXT, "medium", "center", max_width=315, min_size=23)
-            if i:
-                canvas.line(28 + i * 1024 / 3, 446, 28 + i * 1024 / 3, 496)
+    for i, (label, value) in enumerate(stats):
+        center = 28 + (i + .5) * 1024 / 3
+        canvas.text(center, 444, label, 26, MUTED, align="center", max_width=315)
+        canvas.text(center, 472, value, 29, TEXT, "medium", "center", max_width=315, min_size=23)
+        if i:
+            canvas.line(28 + i * 1024 / 3, 446, 28 + i * 1024 / 3, 496)
 
 
 def _stocks(canvas: Canvas, brief: Brief) -> None:
-    quotes = _available(brief.stocks)
+    quotes = _current(brief.stocks, brief)
     extended = _available(getattr(brief, "extended_stocks", [])) if brief.kind == "postmarket" else {}
     canvas.card(28, 528, 1024, 292)
     canvas.heading(50, 548, "核心科技股")
@@ -151,26 +153,35 @@ def _stocks(canvas: Canvas, brief: Brief) -> None:
 
 
 def _sectors(canvas: Canvas, brief: Brief) -> None:
-    values = [q for q in brief.sectors if q.pct is not None and isfinite(q.pct) and isfinite(q.last) and q.last > 0]
+    values = [q for q in _current(brief.sectors, brief).values() if q.pct is not None and isfinite(q.pct)]
     ordered = sorted(values, key=lambda quote: quote.pct, reverse=True)
     strongest = ordered[:3]
-    weakest = list(reversed(ordered[-3:]))
+    strong_symbols = {quote.symbol for quote in strongest}
+    weakest = [quote for quote in reversed(ordered) if quote.symbol not in strong_symbols][:3]
     canvas.card(28, 838, 1024, 270)
     canvas.heading(50, 857, "板块ETF强弱")
     canvas.text(1030, 867, "相对表现 · 涨跌幅", 23, MUTED, align="right", max_width=380)
-    canvas.text(50, 902, _activity(brief), 22, MUTED, max_width=980, min_size=19)
-    dates = sorted({q.trade_date for q in values if q.trade_date is not None})
-    date_label = f"ETF参考{dates[0]:%m.%d}收盘" if len(dates) == 1 else "ETF时点不同，详见文案" if dates else "ETF收盘数据待确认"
-    canvas.text(50, 932, date_label, 19, MUTED, max_width=980)
-    canvas.line(540, 958, 540, 1088)
+    if brief.kind == "premarket":
+        base = f"{brief.reference_date:%m.%d}基准" if brief.reference_date else "基准待确认"
+        canvas.text(50, 902, f"相对最近常规收盘 · {base} · 各项实际时点", 22, MUTED, max_width=980, min_size=19)
+        group_y, row_y, pitch = 926, 960, 46
+    else:
+        canvas.text(50, 902, _activity(brief), 22, MUTED, max_width=980, min_size=19)
+        dates = sorted({q.trade_date for q in values if q.trade_date is not None})
+        date_label = f"ETF参考{dates[0]:%m.%d}收盘" if len(dates) == 1 else "ETF时点不同，详见文案" if dates else "ETF收盘数据待确认"
+        canvas.text(50, 932, date_label, 19, MUTED, max_width=980)
+        group_y, row_y, pitch = 959, 993, 35
+    canvas.line(540, group_y - 1, 540, 1088)
     for x, label, rows, color in ((50, "相对较强", strongest, RED), (574, "相对较弱", weakest, GREEN)):
-        canvas.text(x, 959, label, 25, color, "medium")
+        canvas.text(x, group_y, label, 25, color, "medium")
         for i in range(3):
             quote = rows[i] if i < len(rows) else None
-            y = 993 + i * 35
+            y = row_y + i * pitch
             canvas.pair(x, y, 454, f"{quote.name} {quote.symbol}" if quote else "待确认",
                         fmt_pct(quote.pct if quote else None), 28,
                         color=_tone(quote.pct if quote else None), weight="regular")
+            if brief.kind == "premarket":
+                canvas.text(x + 454, y + 30, _stamp(quote, brief), 15, MUTED, align="right", max_width=454)
 
 
 def _macro_news(canvas: Canvas, brief: Brief) -> None:
@@ -212,7 +223,8 @@ def render_png(brief: Brief, path: Path) -> Path:
     _sectors(canvas, brief)
     _macro_news(canvas, brief)
     status = "数据限制见文案" if brief.notes else "公开行情可能延迟"
-    canvas.text(28, 1585, f"Yahoo Finance / 见闻 · {status}", 18, MUTED, max_width=650)
+    source = "Yahoo Finance / BOATS / 见闻" if brief.kind == "premarket" else "Yahoo Finance / 见闻"
+    canvas.text(28, 1585, f"{source} · {status}", 18, MUTED, max_width=650)
     canvas.text(1052, 1585, "美东时间 · 红涨绿跌 · 不构成投资建议", 18, MUTED, align="right", max_width=410)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

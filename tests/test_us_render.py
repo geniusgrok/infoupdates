@@ -40,6 +40,7 @@ def briefing(kind="postmarket"):
     clock = datetime(2026, 9, 30, 17, 40, tzinfo=NY)
     closing = datetime(2026, 9, 30, 16, 0, tzinfo=NY)
     before = datetime(2026, 9, 30, 8, 40, tzinfo=NY)
+    overnight = datetime(2026, 9, 29, 21, 24, tzinfo=NY)
 
     def quotes(names, last=150, session="regular", asof=closing):
         return [Quote(symbol, name, last + i * 10, pct=1.23 - i * .4, asof=asof,
@@ -56,13 +57,14 @@ def briefing(kind="postmarket"):
     activity = Quote("SPY", "标普500ETF", 680, pct=.7, asof=closing, volume=83e6,
                      previous_volume=75e6, previous_date=date(2026, 9, 29))
     return Brief(kind=kind, generated_at=before if kind == "premarket" else clock,
-                 edition_date=day, reference_date=day, indices=indices,
+                 edition_date=day, reference_date=date(2026, 9, 29) if kind == "premarket" else day, indices=indices,
                  futures=quotes(FUTURE_NAMES, 6500, "reference", before), stocks=stocks,
-                 sectors=quotes(SECTOR_NAMES), references=reference, activity=activity,
+                 sectors=quotes(SECTOR_NAMES, session="overnight" if kind == "premarket" else "regular",
+                                asof=overnight if kind == "premarket" else closing), references=reference, activity=activity,
                  news=[NewsItem(datetime(2026, 9, 30, 15, 40, tzinfo=NY), title, "见闻")
                        for title in ("美国核心PCE数据公布，市场关注通胀与就业变化", "美联储官员讨论货币政策与经济增长", "科技企业发布季度业绩报告")],
                  headline="美股主要指数涨跌互现", sentiment="平淡",
-                 market_summary="市场情绪平淡，SPY基本平量；成交量按股数统计。",
+                 market_summary="市场情绪平淡，夜盘/盘前活跃度待确认。" if kind == "premarket" else "市场情绪平淡，SPY基本平量；成交量按股数统计。",
                  stocks_label="盘前行情" if kind == "premarket" else "收盘行情", complete=kind == "postmarket")
 
 
@@ -98,8 +100,15 @@ class USRenderTests(unittest.TestCase):
                 text = "\n".join(value for value, _ in canvas.texts)
                 self.assertIn("2026.09.30 星期三", text)
                 self.assertIn("美股盘前精选" if kind == "premarket" else "美股盘后精选", text)
-                self.assertIn("8300万股", text)
-                self.assertIn("较09.29增加800万股", text)
+                if kind == "postmarket":
+                    self.assertIn("8300万股", text)
+                    self.assertIn("较09.29增加800万股", text)
+                else:
+                    self.assertIn("最新科技股", text)
+                    self.assertIn("最新板块ETF", text)
+                    self.assertIn("7 / 7家", text)
+                    self.assertIn("09.29基准", text)
+                    self.assertNotIn("8300万股", text)
                 self.assertIn("VIX恐慌指数", text)
                 self.assertIn("4.25%", text)
                 self.assertIn("$4,186.60/盎司", text)
@@ -115,7 +124,10 @@ class USRenderTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 canvas = self.draw_brief(Brief(kind, datetime(2026, 9, 30, 8, tzinfo=NY), date(2026, 9, 30)))
                 text = "\n".join(value for value, _ in canvas.texts)
-                self.assertIn("SPY成交量待确认", text)
+                if kind == "postmarket":
+                    self.assertIn("SPY成交量待确认", text)
+                else:
+                    self.assertNotIn("SPY成交量", text)
                 self.assertIn("时点待确认", text)
                 self.assertNotIn("0股", text)
                 self.assertNotIn("$0", text)
@@ -139,17 +151,60 @@ class USRenderTests(unittest.TestCase):
 
     def test_stock_rows_show_each_actual_session_and_time(self):
         brief = briefing("premarket")
-        brief.stocks[0].session = "regular"
-        brief.stocks[0].asof = datetime(2026, 9, 29, 16, tzinfo=NY)
+        brief.stocks[0].session = "overnight"
+        brief.stocks[0].asof = datetime(2026, 9, 29, 21, 24, tzinfo=NY)
         brief.stocks[1].session = "postmarket"
         brief.stocks[1].asof = datetime(2026, 9, 29, 18, 30, tzinfo=NY)
         brief.references[0].asof = None
         canvas = self.draw_brief(brief)
         text = "\n".join(value for value, _ in canvas.texts)
-        self.assertIn("前收09.29 16:00", text)
+        self.assertIn("夜盘09.29 21:24", text)
         self.assertIn("盘后09.29 18:30", text)
         self.assertIn("盘前09.30 08:40", text)
         self.assertIn("时点待确认", text)
+
+    def test_latest_overnight_prices_and_etf_times_are_not_previous_close(self):
+        brief = briefing("premarket")
+        brief.stocks[0] = Quote("AAPL", "苹果", 334.03, pct=.77,
+                                asof=datetime(2026, 9, 29, 21, 24, tzinfo=NY), session="overnight")
+        brief.stocks[1] = Quote("MSFT", "微软", 999.88, pct=0,
+                                asof=datetime(2026, 9, 29, 16, 0, tzinfo=NY), session="regular")
+        brief.sectors[0].asof = datetime(2026, 9, 29, 21, 24, tzinfo=NY)
+        brief.sectors[1].asof = datetime(2026, 9, 29, 23, 30, tzinfo=NY)
+        canvas = self.draw_brief(brief)
+        text = "\n".join(value for value, _ in canvas.texts)
+        self.assertIn("$334.03", text)
+        self.assertIn("+0.77%", text)
+        self.assertIn("6 / 7家", text)
+        self.assertNotIn("$999.88", text)
+        self.assertNotIn("前收", text)
+        stamps = [value for value, bounds in canvas.texts if 838 < bounds[1] < 1108]
+        self.assertIn("夜盘09.29 21:24", stamps)
+        self.assertIn("夜盘09.29 23:30", stamps)
+
+    def test_premarket_regular_only_data_stays_unavailable(self):
+        brief = briefing("premarket")
+        for quote in brief.stocks + brief.sectors:
+            quote.session = "regular"
+            quote.pct = 0
+        canvas = self.draw_brief(brief)
+        text = "\n".join(value for value, _ in canvas.texts)
+        self.assertIn("0 / 7家", text)
+        self.assertNotIn("前收", text)
+        self.assertNotIn("0.00%", text)
+        self.assertNotIn("SPY成交量", text)
+
+    def test_partial_latest_etfs_do_not_repeat_in_both_rankings(self):
+        for count in range(1, 5):
+            brief = briefing("premarket")
+            brief.sectors = brief.sectors[:count]
+            with self.subTest(count=count):
+                canvas = self.draw_brief(brief)
+                rows = [value for value, bounds in canvas.texts if 838 < bounds[1] < 1108]
+                for quote in brief.sectors:
+                    self.assertEqual(rows.count(f"{quote.name} {quote.symbol}"), 1)
+                self.assertTrue(any(value == "—" for value in rows))
+                self.assertTrue(any("BOATS" in value for value, _ in canvas.texts))
 
     def test_futures_keep_their_session_when_edition_is_next_day(self):
         brief = briefing("premarket")

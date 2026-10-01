@@ -12,7 +12,7 @@ from .models import (
     FUTURE_NAMES, INDEX_NAMES, MACRO_NAMES, MEGA_NAMES, SECTOR_NAMES,
     NY, MarketData, Quote, new_york_time,
 )
-from .parse import chart_result, parse_completed, parse_extended, parse_quote
+from .parse import chart_result, parse_completed, parse_extended, parse_overnight, parse_quote
 
 YAHOO = "https://finance.yahoo.com/"
 CHART_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
@@ -52,15 +52,27 @@ def _extended(symbol: str, name: str, now: datetime, daily_payload: dict | None)
     )
 
 
+def _overnight(symbol: str, name: str, now: datetime) -> Quote | None:
+    html = fetch_text(f"{YAHOO}quote/{quote(symbol, safe='')}/", YAHOO, timeout=12, retries=0)
+    return parse_overnight(html, symbol, name, now=now)
+
+
 def load_market(*, now: datetime | None = None) -> MarketData:
     """Capture all instruments against one New York timestamp; failures stay local."""
     now = new_york_time(now or datetime.now(NY))
     result = MarketData()
     names = {**INDEX_NAMES, **FUTURE_NAMES, **MEGA_NAMES, **SECTOR_NAMES, **MACRO_NAMES, "SPY": "SPY成交量"}
+    extended_names = {**MEGA_NAMES, **SECTOR_NAMES}
     payloads: dict[str, dict] = {}
     # Requests are parallel but accumulated in fixed symbol order for reproducible output.
     with ThreadPoolExecutor(max_workers=8) as pool:
-        daily_tasks = {symbol: pool.submit(_daily, symbol, name, now) for symbol, name in names.items()}
+        daily_tasks = {}
+        overnight_tasks = {}
+        for symbol, name in names.items():
+            daily_tasks[symbol] = pool.submit(_daily, symbol, name, now)
+            if symbol in extended_names:
+                # Public night quotes do not depend on the chart endpoint succeeding.
+                overnight_tasks[symbol] = pool.submit(_overnight, symbol, name, now)
         news_tasks = (
             ("见闻美股快讯", pool.submit(wscn_items, "us-stock-channel", 2)),
             ("见闻全球快讯", pool.submit(wscn_items, "global-channel", 2)),
@@ -87,7 +99,7 @@ def load_market(*, now: datetime | None = None) -> MarketData:
                 result.notes.append(f"{label}暂缺：{exc}")
         extended_tasks = {
             symbol: pool.submit(_extended, symbol, name, now, payloads.get(symbol))
-            for symbol, name in MEGA_NAMES.items()
+            for symbol, name in extended_names.items()
         }
         for symbol, future in extended_tasks.items():
             try:
@@ -97,11 +109,22 @@ def load_market(*, now: datetime | None = None) -> MarketData:
                 if postmarket is not None:
                     result.postmarket[symbol] = postmarket
                 if premarket is None and postmarket is None:
-                    result.notes.append(f"{MEGA_NAMES[symbol]}（{symbol}）盘前/盘后真实交易数据暂缺")
+                    result.notes.append(f"{extended_names[symbol]}（{symbol}）盘前/盘后真实交易数据暂缺")
                 elif any(item is not None and item.pct is None for item in (premarket, postmarket)):
-                    result.notes.append(f"{MEGA_NAMES[symbol]}（{symbol}）延长时段涨跌基准暂缺")
+                    result.notes.append(f"{extended_names[symbol]}（{symbol}）延长时段涨跌基准暂缺")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-                result.notes.append(f"{MEGA_NAMES[symbol]}（{symbol}）盘前/盘后行情暂缺：{exc}")
+                result.notes.append(f"{extended_names[symbol]}（{symbol}）盘前/盘后行情暂缺：{exc}")
+        for symbol, future in overnight_tasks.items():
+            try:
+                overnight = future.result()
+                if overnight is not None:
+                    result.overnight[symbol] = overnight
+                    if overnight.pct is None:
+                        result.notes.append(f"{extended_names[symbol]}（{symbol}）夜盘常规收盘基准暂缺")
+                else:
+                    result.notes.append(f"{extended_names[symbol]}（{symbol}）本版真实夜盘行情暂缺")
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+                result.notes.append(f"{extended_names[symbol]}（{symbol}）夜盘行情暂缺：{exc}")
     if not result.news:
         result.notes.append("美股快讯暂缺")
     if any(symbol in result.quotes for symbol in (*FUTURE_NAMES, "GC=F", "CL=F", "DX-Y.NYB")):

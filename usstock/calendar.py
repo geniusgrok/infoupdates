@@ -118,6 +118,16 @@ def extended_close(day: date) -> datetime:
     return datetime.combine(day, time(hour), tzinfo=NY)
 
 
+def overnight_window(day: date) -> tuple[datetime, datetime]:
+    """本版夜盘跨自然日，周日20:00的报价归于周一交易日。"""
+    if not is_trading_day(day):
+        raise ValueError(f"{day.isoformat()}不是 NYSE 交易日")
+    return (
+        datetime.combine(day - timedelta(days=1), time(20), tzinfo=NY),
+        datetime.combine(day, time(4), tzinfo=NY),
+    )
+
+
 def last_completed_session(now: datetime) -> date:
     now = new_york_time(now)
     if is_trading_day(now.date()) and now >= session_close(now.date()):

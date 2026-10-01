@@ -4,19 +4,22 @@ from dataclasses import replace
 from datetime import date, datetime, time
 from math import isfinite
 
-from .calendar import extended_close, edition_date, is_trading_day, last_completed_session, session_close, session_open
+from .calendar import (
+    extended_close, edition_date, is_trading_day, last_completed_session,
+    overnight_window, previous_trading_day, session_close, session_open,
+)
 from .models import (
     NY, Brief, Quote, MarketData, INDEX_NAMES, FUTURE_NAMES, MEGA_NAMES,
     SECTOR_NAMES, MACRO_NAMES, new_york_time,
 )
-from .narrative import build_narrative, select_news
+from .narrative import build_narrative, fresh_futures, select_news
 
 
 def _valid_quote(quote: Quote, now: datetime) -> Quote | None:
     if not isfinite(quote.last) or quote.last <= 0 or quote.asof is None:
         return None
     asof = new_york_time(quote.asof)
-    if asof > now:
+    if asof.timestamp() > now.timestamp():
         return None
     pct = quote.pct if quote.pct is not None and isfinite(quote.pct) else None
     return replace(quote, asof=asof, pct=pct)
@@ -56,6 +59,44 @@ def _postmarket_quote(quote: Quote, now: datetime, reference: date | None) -> Qu
     return quote
 
 
+def _latest_premarket(symbol: str, data: MarketData, now: datetime, target: date) -> Quote | None:
+    basis = previous_trading_day(target)
+    candidates: list[Quote] = []
+    raw = data.premarket.get(symbol)
+    if raw is not None:
+        premarket = _premarket_quote(raw, now, target)
+        if premarket is not None:
+            candidates.append(premarket)
+    raw = data.overnight.get(symbol)
+    if raw is not None:
+        overnight = _valid_quote(raw, now)
+        start, end = overnight_window(target)
+        if overnight is not None and overnight.session == "overnight" and start <= overnight.asof < end:
+            candidates.append(overnight)
+    # 当前盘后可作为明示参考；跨周末、假日的陈旧盘后不补位。
+    raw = data.postmarket.get(symbol)
+    if raw is not None:
+        postmarket = _postmarket_quote(raw, now, basis)
+        if postmarket is not None and 0 <= now.timestamp() - postmarket.asof.timestamp() <= 16 * 3600:
+            candidates.append(postmarket)
+    candidates = [quote for quote in candidates if quote.symbol == symbol]
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda quote: quote.asof.timestamp())
+    if (latest.previous_date != basis or latest.previous_close is None
+            or not isfinite(latest.previous_close) or latest.previous_close <= 0):
+        latest = replace(latest, pct=None)
+    return latest
+
+
+def _latest_label(quotes: list[Quote]) -> str:
+    sessions = {quote.session for quote in quotes}
+    if len(sessions) > 1:
+        return "最新延长行情（混合时段）"
+    labels = {"premarket": "盘前行情", "overnight": "夜盘行情", "postmarket": "盘后参考"}
+    return labels.get(next(iter(sessions), ""), "行情暂缺")
+
+
 def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Brief:
     now = new_york_time(now or datetime.now(NY))
     target = edition_date(kind, now)
@@ -79,43 +120,44 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     sectors = [aligned[symbol] for symbol in SECTOR_NAMES if symbol in aligned]
     regular_stocks = [aligned[symbol] for symbol in MEGA_NAMES if symbol in aligned]
     complete = len(indices) == len(INDEX_NAMES) and all(quote.pct is not None for quote in indices)
-    if reference is None:
-        notes.append("已完成常规场行情暂缺；盘中或盘后延长交易不替代收盘数据")
-    elif reference != latest_completed:
-        notes.append(f"最新完成场为{latest_completed.isoformat()}；行情仅到{reference.isoformat()}收盘")
-        complete = False
-    if len(indices) != len(INDEX_NAMES):
-        missing = "、".join(name for symbol, name in INDEX_NAMES.items() if symbol not in aligned)
-        notes.append(f"同日主指数暂缺：{missing}")
-    regular_symbols = set(INDEX_NAMES) | set(MEGA_NAMES) | set(SECTOR_NAMES) | {"SPY"}
-    if reference is not None and any(
-        quote.trade_date != reference for symbol, quote in completed.items() if symbol in regular_symbols
-    ):
-        notes.append("常规场行情日期不一致，已跳过其他日期的数据")
+    if kind == "postmarket":
+        if reference is None:
+            notes.append("已完成常规场行情暂缺；盘中或盘后延长交易不替代收盘数据")
+        elif reference != latest_completed:
+            notes.append(f"最新完成场为{latest_completed.isoformat()}；行情仅到{reference.isoformat()}收盘")
+            complete = False
+        if len(indices) != len(INDEX_NAMES):
+            missing = "、".join(name for symbol, name in INDEX_NAMES.items() if symbol not in aligned)
+            notes.append(f"同日主指数暂缺：{missing}")
+        regular_symbols = set(INDEX_NAMES) | set(MEGA_NAMES) | set(SECTOR_NAMES) | {"SPY"}
+        if reference is not None and any(
+            quote.trade_date != reference for symbol, quote in completed.items() if symbol in regular_symbols
+        ):
+            notes.append("常规场行情日期不一致，已跳过其他日期的数据")
     stocks = regular_stocks
     extended_stocks: list[Quote] = []
     stocks_label = "常规场收盘"
     if kind == "premarket":
-        stocks = []
-        premarket_count = 0
-        for symbol in MEGA_NAMES:
-            raw = data.premarket.get(symbol)
-            premarket = _premarket_quote(raw, now, target) if raw is not None else None
-            if premarket is not None:
-                stocks.append(premarket)
-                premarket_count += 1
-            elif symbol in aligned:
-                stocks.append(aligned[symbol])
-        if premarket_count == len(stocks) and premarket_count:
-            stocks_label = "盘前行情"
-        elif premarket_count:
-            stocks_label = "盘前 / 前收行情"
-            notes.append("部分个股盘前行情暂缺，已逐项标明前收")
-        else:
-            stocks_label = "前收行情"
-            notes.append("本版盘前个股行情暂缺，所列股票均为前收")
-        if target != now.date():
-            notes.append("尚未进入本版交易日盘前，期货为当前参考，非下一交易日盘前实盘")
+        reference = previous_trading_day(target)
+        indices = []
+        stocks = [quote for symbol in MEGA_NAMES
+                  if (quote := _latest_premarket(symbol, data, now, target)) is not None]
+        sectors = [quote for symbol in SECTOR_NAMES
+                   if (quote := _latest_premarket(symbol, data, now, target)) is not None]
+        stocks_label = _latest_label(stocks)
+        complete = (len(stocks) == len(MEGA_NAMES) and len(sectors) == len(SECTOR_NAMES)
+                    and all(quote.pct is not None for quote in stocks + sectors))
+        for names, quotes, label in ((MEGA_NAMES, stocks, "个股"), (SECTOR_NAMES, sectors, "板块ETF")):
+            present = {quote.symbol for quote in quotes}
+            missing = "、".join(symbol for symbol in names if symbol not in present)
+            if missing:
+                notes.append(f"最新{label}行情暂缺：{missing}（无本版夜盘/盘前或最近盘后报价）")
+        post_only = [quote.symbol for quote in stocks + sectors if quote.session == "postmarket"]
+        if post_only:
+            notes.append("夜盘暂缺，以下仅有最近盘后参考：" + "、".join(post_only))
+        unknown_base = [quote.symbol for quote in stocks + sectors if quote.pct is None]
+        if unknown_base:
+            notes.append("比较基准或涨跌幅暂缺：" + "、".join(unknown_base))
     if kind == "postmarket":
         for symbol in MEGA_NAMES:
             raw = data.postmarket.get(symbol)
@@ -131,8 +173,10 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     for symbol in FUTURE_NAMES:
         raw = data.quotes.get(symbol)
         quote = _valid_quote(raw, now) if raw is not None else None
-        if quote is not None and quote.session == "futures":
+        if quote is not None and quote.symbol == symbol and quote.session == "futures":
             futures.append(quote)
+    if kind == "premarket":
+        futures = fresh_futures(futures, now, target)
     for symbol in MACRO_NAMES:
         # 宏观参考各有市场时段，保留实际时点，不套用NYSE股票16:00规则。
         raw = data.quotes.get(symbol) or aligned.get(symbol)
@@ -142,7 +186,7 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     brief = Brief(
         kind=kind, generated_at=now, edition_date=target, reference_date=reference,
         indices=indices, futures=futures, stocks=stocks, sectors=sectors,
-        references=references, activity=aligned.get("SPY"),
+        references=references, activity=aligned.get("SPY") if kind == "postmarket" else None,
         notes=list(dict.fromkeys(notes)), stocks_label=stocks_label, complete=complete, extended_stocks=extended_stocks,
     )
     brief.news = select_news(data.news, kind=kind, reference_date=reference, now=now, limit=6)

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from html.parser import HTMLParser
 from math import isfinite
 
-from .calendar import SUPPORTED_YEARS, extended_close, is_trading_day, previous_trading_day, session_close, session_open
+from .calendar import (
+    SUPPORTED_YEARS, edition_date, extended_close, is_trading_day, overnight_window,
+    previous_trading_day, session_close, session_open,
+)
 from .models import NY, Quote, new_york_time
 
 
@@ -28,7 +33,8 @@ def _timestamp(value: object, now: datetime) -> datetime | None:
         moment = datetime.fromtimestamp(number, NY)
     except (ValueError, OSError, OverflowError):
         return None
-    return moment if moment <= now else None
+    # Equal ZoneInfo objects compare wall clocks during the repeated DST hour.
+    return moment if number <= now.timestamp() else None
 
 
 def chart_result(payload: object, symbol: str) -> dict | None:
@@ -262,3 +268,83 @@ def parse_extended(
         reference, selected.at, session=session, volume=volume,
         previous_date=reference_day, unit=_unit(symbol),
     )
+
+
+class _YahooPriceScripts(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.scripts: list[str] = []
+        self._parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and attributes.get("type") == "application/json" and "data-sveltekit-fetched" in attributes:
+            self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._parts is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._parts is not None:
+            self.scripts.append("".join(self._parts))
+            self._parts = None
+
+
+def _page_prices(html: str, symbol: str):
+    parser = _YahooPriceScripts()
+    parser.feed(html)
+    parser.close()
+    for script in parser.scripts:
+        try:
+            outer = json.loads(script)
+            if not isinstance(outer, dict) or outer.get("status") != 200 or not isinstance(outer.get("body"), str):
+                continue
+            body = json.loads(outer["body"])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(body, dict) or not isinstance(body.get("quoteSummary"), dict):
+            continue
+        results = body["quoteSummary"].get("result")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            price = result.get("price") if isinstance(result, dict) else None
+            if isinstance(price, dict) and price.get("symbol") == symbol:
+                yield price
+
+
+def _raw_price(value: object) -> float | None:
+    return finite_number(value.get("raw"), positive=True) if isinstance(value, dict) else None
+
+
+def parse_overnight(
+    html: str, symbol: str, name: str, *, now: datetime | None = None,
+) -> Quote | None:
+    """A real Yahoo/BOATS night quote; the chart endpoint does not carry this session."""
+    if not isinstance(html, str):
+        return None
+    now = new_york_time(now or datetime.now(NY))
+    target = edition_date("premarket", now)
+    start, end = overnight_window(target)
+    basis_day = previous_trading_day(target)
+    candidates: list[Quote] = []
+    for price in _page_prices(html, symbol):
+        last = _raw_price(price.get("overnightMarketPrice"))
+        at = _timestamp(price.get("overnightMarketTime"), now)
+        source = price.get("overnightMarketSource")
+        if last is None or at is None or not start <= at < end or not isinstance(source, str) or not source.strip():
+            continue
+        if price.get("currency") not in (None, "USD"):
+            continue
+        reference = _raw_price(price.get("regularMarketPrice"))
+        reference_at = _timestamp(price.get("regularMarketTime"), now)
+        if reference_at is None or reference_at.date() != basis_day or reference_at < session_close(basis_day):
+            reference = None
+        pct = finite_number((last / reference - 1) * 100) if reference is not None else None
+        candidates.append(Quote(
+            symbol, name, last, pct, reference, at, session="overnight",
+            previous_date=basis_day if reference is not None else None,
+            source=source.strip(), unit="USD",
+        ))
+    return max(candidates, key=lambda item: item.asof) if candidates else None

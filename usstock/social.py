@@ -7,10 +7,10 @@ from .models import Brief, Quote, new_york_time
 def _quotes(quotes: list[Quote]) -> list[str]:
     rows: list[str] = []
     for quote in quotes:
-        session = {"regular": "常规场", "premarket": "盘前", "postmarket": "盘后延长交易", "futures": "期货", "reference": "参考"}.get(quote.session, quote.session)
+        session = {"regular": "常规场", "overnight": "夜盘", "premarket": "盘前", "postmarket": "盘后延长交易", "futures": "期货", "reference": "参考"}.get(quote.session, quote.session)
         stamp = new_york_time(quote.asof).strftime("%m-%d %H:%M ET") if quote.asof else "时点待确认"
         unit = {"USD": "美元", "points": "点", "%": "%"}.get(quote.unit, quote.unit)
-        rows.append(f"{quote.name} ({quote.symbol})  {fmt_px(quote.last)}{unit}  {fmt_pct(quote.pct)}  [{session} {stamp}]")
+        rows.append(f"{quote.name} ({quote.symbol})  {fmt_px(quote.last)}{unit}  {fmt_pct(quote.pct)}  [{session} {stamp}；{quote.source}]")
     return rows
 
 
@@ -22,8 +22,10 @@ def social_copy(brief: Brief) -> str:
         "", brief.headline, brief.market_summary,
     ]
     if brief.reference_date is not None:
-        lines.extend(["", f"常规场参考：{brief.reference_date.isoformat()}收盘"])
-    lines.extend(["", "主指数（完成常规场）", *_quotes(brief.indices)])
+        label = "比较基准日期" if brief.kind == "premarket" else "常规场参考"
+        lines.extend(["", f"{label}：{brief.reference_date.isoformat()}收盘"])
+    if brief.kind == "postmarket":
+        lines.extend(["", "主指数（完成常规场）", *_quotes(brief.indices)])
     if brief.futures:
         lines.extend(["", "股指期货（各项实际时点；相对供应商参考基准）", *_quotes(brief.futures)])
     if brief.stocks:
@@ -31,8 +33,9 @@ def social_copy(brief: Brief) -> str:
     if brief.extended_stocks:
         lines.extend(["", "盘后延长交易（相对当日常规收盘）", *_quotes(brief.extended_stocks)])
     if brief.sectors:
-        lines.extend(["", "11类板块ETF（参考常规场，不代表全市场涨跌家数）", *_quotes(brief.sectors)])
-    if brief.activity is not None and brief.activity.volume is not None:
+        label = "最新延长交易" if brief.kind == "premarket" else "参考常规场"
+        lines.extend(["", f"11类板块ETF（{label}，不代表全市场涨跌家数）", *_quotes(brief.sectors)])
+    if brief.kind == "postmarket" and brief.activity is not None and brief.activity.volume is not None:
         lines.extend(["", f"SPY全日成交量 {brief.activity.volume:,.0f}股（单只ETF，不是成交额或全市场量能）"])
     if brief.references:
         lines.extend(["", "宏观参考（按各项实际时点）", *_quotes(brief.references)])

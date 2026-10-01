@@ -55,6 +55,7 @@ class MarketData:
     news: list[NewsItem] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     completed: dict[str, Quote] = field(default_factory=dict)
+    overnight: dict[str, Quote] = field(default_factory=dict)
 
 
 @dataclass
