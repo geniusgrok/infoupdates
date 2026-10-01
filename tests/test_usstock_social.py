@@ -44,7 +44,7 @@ class USSocialTests(unittest.TestCase):
         self.assertEqual(text.count("关键消息："), 1)
         self.assertEqual(text.count("下一事件："), 1)
         self.assertIn("计划 10-02 08:30", text)
-        self.assertLessEqual(len(text.splitlines()), 10)
+        self.assertLessEqual(len(text), 800)
 
     def test_mixed_stages_keep_dates_and_do_not_merge_post_reference_into_premarket(self):
         brief = briefing()
@@ -114,7 +114,7 @@ class USSocialTests(unittest.TestCase):
         self.assertIn("日期不一致的行情已剔除", text)
         self.assertIn("部分数据源暂缺，采用可用报价", text)
         self.assertNotIn("TimeoutError", text)
-        self.assertLessEqual(len(text.splitlines()), 10)
+        self.assertLessEqual(len(text), 800)
 
     def test_missing_event_keeps_same_image_watch_and_no_regular_close_fallback(self):
         brief = briefing()

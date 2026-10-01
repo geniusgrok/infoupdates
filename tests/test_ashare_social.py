@@ -40,7 +40,7 @@ class SocialSummaryTests(unittest.TestCase):
         self.assertNotIn("中证1000", text)
         self.assertNotIn("钢铁行业", text)
         self.assertNotIn("纺织行业", text)
-        self.assertLessEqual(len(text.splitlines()), 11)
+        self.assertLessEqual(len(text), 650)
         self.assertTrue(text.rstrip().endswith("不构成投资建议。"))
 
     def test_text_and_image_select_same_news_event_and_observation(self):

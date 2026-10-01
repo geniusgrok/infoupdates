@@ -18,17 +18,22 @@ def social_copy(brief: Brief) -> str:
     if brief.kind == "morning":
         summary = f"A股参考{_a_reference(brief)}：" + summary
     lines = [f"A股{title}｜{day.year}年{day.month}月{day.day}日 {weekday_cn(day).replace('周', '星期')}",
-             lead + "。", summary, _indices(brief)]
+             "", "【市场概况】", lead + "。", summary,
+             "", "【关键表现】", "  • " + _indices(brief)]
     if brief.breadth:
         line = f"上涨{brief.breadth.up}家、下跌{brief.breadth.down}家"
         if brief.turnover is not None:
             line += f"，沪深成交{fmt_amount(brief.turnover)}元"
-        lines.append(line + "。")
-    lines.append(_sectors_and_funds(brief))
-    for item in focus_items(brief):
-        stamp = f"（{item.stamp}）" if item.stamp else ""
-        lines.append(f"{item.label}：{item.title}{stamp}")
-    lines.append(_reference(brief))
+        lines.append("  • " + line + "。")
+    lines.append("  • " + _sectors_and_funds(brief))
+    lines.extend(["", "【两条重点】"])
+    for index, item in enumerate(focus_items(brief), 1):
+        if index > 1:
+            lines.append("")
+        lines.append(f"{index}. {item.label}：{item.title}")
+        if item.stamp:
+            lines.append("   " + item.stamp)
+    lines.extend(["", "【数据说明】", _reference(brief)])
     limits = _limits(brief)
     if limits:
         lines.append(limits)

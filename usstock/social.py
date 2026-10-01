@@ -80,13 +80,14 @@ def social_copy(brief: Brief) -> str:
     day = brief.edition_date
     weekday = weekday_cn(day).replace("周", "星期")
     lines = [f"{brief.title}｜{day.year}年{day.month}月{day.day}日 {weekday}（美东日期）",
-             f"{brief.headline}。{brief.market_summary.rstrip('。')}。"]
+             "", "【市场概况】", f"{brief.headline}。", f"{brief.market_summary.rstrip('。')}。"]
     if brief.kind == "premarket" and brief.reference_date is not None:
         lines.append(f"比较基准日期：{brief.reference_date.isoformat()}收盘（个股/ETF）；期货按供应商基准。")
     primary = brief.futures if brief.kind == "premarket" else brief.indices
-    lines.append(_quote_line("股指期货" if brief.kind == "premarket" else "主指数", list(available_quotes(primary).values())[:4]))
+    lines.extend(["", "【关键表现】"])
+    lines.append("  • " + _quote_line("股指期货" if brief.kind == "premarket" else "主指数", list(available_quotes(primary).values())[:4]))
     stocks = selected_stocks(brief)
-    lines.append(_quote_line("重点个股", stocks, stocks=True))
+    lines.append("  • " + _quote_line("重点个股", stocks, stocks=True))
     extended = afterhours_quotes(brief)
     after = [extended[quote.symbol] for quote in stocks if quote.symbol in extended]
     if after:
@@ -95,27 +96,34 @@ def social_copy(brief: Brief) -> str:
             return known, abs(quote.pct) if known else 0
 
         after = [max(after, key=priority)]
-        lines.append(_quote_line("盘后延长交易（相对当日常规收盘）", after, stocks=True, prices=True))
+        lines.append("  • " + _quote_line("盘后延长交易（相对当日常规收盘）", after, stocks=True, prices=True))
     strong, weak = sector_leaders(brief)
     sectors = strong[:1] + weak[:1]
     if sectors:
         label = "板块ETF（相对较强/较弱）" if weak else "板块ETF（相对较强）"
-        lines.append(_quote_line(label, sectors))
+        lines.append("  • " + _quote_line(label, sectors))
     else:
-        lines.append("板块ETF：最新相对强弱待确认。")
+        lines.append("  • 板块ETF：最新相对强弱待确认。")
     focus = build_focus(brief.news, brief.generated_at, market="usstock", event=brief.event,
                         watch="关注通胀、利率与科技业绩能否支持当前走势。")
-    for item in focus:
-        stamp = f"（{item.stamp}）" if item.stamp else ""
-        lines.append(f"{item.label}：{item.title.rstrip('。')}{stamp}。")
+    lines.extend(["", "【两条重点】"])
+    for number, item in enumerate(focus, start=1):
+        if number > 1:
+            lines.append("")
+        lines.append(f"{number}. {item.label}：{item.title.rstrip('。')}。")
+        if item.stamp:
+            lines.append("   " + item.stamp)
+    lines.extend(["", "【数据说明】"])
     limits = _limitations(brief)
     if limits:
-        lines.append(limits)
+        lines.append(limits.removeprefix("数据说明："))
     shown = primary + stocks + after + sectors
     if brief.kind == "postmarket" and brief.activity is not None:
         shown.append(brief.activity)
     providers = sorted({quote.source.split("（", 1)[0] for quote in shown})
     now = new_york_time(brief.generated_at)
-    suffix = "SPY为供应商披露日线股数代理，非全市场成交额。" if brief.kind == "postmarket" else ""
-    lines.append(f"生成{now:%m-%d %H:%M ET}；行情来源{' / '.join(providers) or '暂缺'}。{suffix}公开行情可能延迟，不构成投资建议。")
+    lines.append(f"生成{now:%m-%d %H:%M ET}；行情来源{' / '.join(providers) or '暂缺'}。")
+    if brief.kind == "postmarket":
+        lines.append("SPY为供应商披露日线股数代理，非全市场成交额。")
+    lines.append("公开行情可能延迟，不构成投资建议。")
     return "\n".join(lines) + "\n"
