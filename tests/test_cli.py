@@ -22,10 +22,17 @@ class CliTests(unittest.TestCase):
     def render(brief, path):
         path.write_bytes(b'image')
 
+    @staticmethod
+    def valid_data(now):
+        a = AData([AQuote('sh000001', '上证指数', 3000, trade_day='2026-09-30', session='15:30:00')],
+                  overseas=[AQuote('gb_dji', '道琼斯', 40000, .5, session='09-30 收盘')])
+        u = UData(completed={'^GSPC': UQuote('^GSPC', '标普500', 100, asof=now.replace(hour=16))},
+                  postmarket={'AAPL': UQuote('AAPL', '苹果', 103, 3, 100, asof=now, session='postmarket', previous_date=now.date())})
+        return a, u
+
     def test_skip_before_fetch_force_overwrite_and_failed_force(self):
         now = datetime(2026, 9, 30, 18, tzinfo=NY)
-        a = AData([AQuote('sh000001', '上证指数', 3000, trade_day='2026-09-30', session='15:30:00')])
-        u = UData(completed={'^GSPC': UQuote('^GSPC', '标普500', 100, asof=now.replace(hour=16))})
+        a, u = self.valid_data(now)
         for cli, data, moment, count in ((ashare, a, now.astimezone(CST), 2), (usstock, u, now, 2),
                                         (weekly, None, datetime(2026, 9, 26, 10, tzinfo=CST), 1)):
             with self.subTest(module=cli.__package__), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
@@ -86,8 +93,8 @@ class CliTests(unittest.TestCase):
         now = datetime(2026, 9, 30, 18, tzinfo=NY)
         news = [NewsItem(now, '美联储公布最新政策展望', '见闻'),
                 NewsItem(now, '美国CPI通胀数据同比上涨2.5%', '见闻')]
-        a = AData([AQuote('sh000001', '上证指数', 3000, trade_day='2026-09-30', session='15:30:00')], news=news)
-        u = UData(completed={'^GSPC': UQuote('^GSPC', '标普500', 100, asof=now.replace(hour=16))}, news=news)
+        a, u = self.valid_data(now)
+        a.news = u.news = news
         for cli, data, moment in ((ashare, a, now.astimezone(CST)), (usstock, u, now)):
             with self.subTest(module=cli.__package__), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
                 stack.enter_context(redirect_stdout(io.StringIO()))
@@ -112,3 +119,63 @@ class CliTests(unittest.TestCase):
                     title = select_focus_news(items, moment).title
                     text = (archive.root / report['path'] / 'summary.txt').read_text()
                     self.assertIn(title, text)
+
+    def test_missing_core_keeps_capture_retries_and_preserves_successful_force_result(self):
+        now = datetime(2026, 9, 30, 18, tzinfo=NY)
+        a, u = self.valid_data(now)
+        cases = ((ashare, 'close', AData([], overseas=a.overseas), a, now.astimezone(CST)),
+                 (ashare, 'morning', AData(a.indices), a, now.astimezone(CST)),
+                 (usstock, 'premarket', UData(completed=u.completed), u, now),
+                 (usstock, 'postmarket', UData(postmarket=u.postmarket), u, now))
+        for cli, kind, missing, valid, moment in cases:
+            with self.subTest(market=cli.__package__, kind=kind), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                stack.enter_context(redirect_stdout(io.StringIO()))
+                errors = stack.enter_context(redirect_stderr(io.StringIO()))
+                clock = stack.enter_context(patch.object(cli, 'datetime', wraps=datetime))
+                clock.now.return_value = moment
+                loader = stack.enter_context(patch.object(cli, 'load_market', side_effect=[missing, valid, missing]))
+                render = stack.enter_context(patch.object(cli, 'render_png', side_effect=self.render))
+                stack.enter_context(patch.object(cli, 'load_next_event', return_value=None))
+                stack.enter_context(patch.object(cli, 'collect_releases'))
+                args = [kind, '--archive', str(Path(folder) / 'archive'), '--output', str(Path(folder) / 'output')]
+                with self.assertRaises(SystemExit) as failure:
+                    cli.main(args)
+                self.assertEqual(failure.exception.code, 2)
+                self.assertIn('核心行情不足', errors.getvalue())
+                archive = Archive(Path(folder) / 'archive')
+                self.assertEqual(len(archive.snapshots()), 1)
+                self.assertEqual(archive.reports(), [])
+                render.assert_not_called()
+                cli.main(args)  # 没有成功结果，正常重试即可；次要数据缺失仍可成稿。
+                saved = archive.reports()
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(len(archive.snapshots()), 2)
+                with self.assertRaises(SystemExit):
+                    cli.main([*args, '--force'])
+                self.assertEqual(archive.reports(), saved)
+                cli.main(args)
+                self.assertEqual(loader.call_count, 3)
+                render.assert_called_once()
+
+    def test_all_retains_valid_edition_when_other_edition_lacks_core(self):
+        now = datetime(2026, 9, 30, 18, tzinfo=NY)
+        _, valid = self.valid_data(now)
+        missing = UData(completed=valid.completed)
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(redirect_stderr(io.StringIO()))
+            clock = stack.enter_context(patch.object(usstock, 'datetime', wraps=datetime))
+            clock.now.return_value = now
+            loader = stack.enter_context(patch.object(usstock, 'load_market', side_effect=[missing, valid]))
+            render = stack.enter_context(patch.object(usstock, 'render_png', side_effect=self.render))
+            stack.enter_context(patch.object(usstock, 'load_next_event', return_value=None))
+            stack.enter_context(patch.object(usstock, 'collect_releases'))
+            args = ['--archive', str(Path(folder) / 'archive'), '--output', str(Path(folder) / 'output')]
+            with self.assertRaises(SystemExit):
+                usstock.main(args)
+            archive = Archive(Path(folder) / 'archive')
+            self.assertEqual([row['session'] for row in archive.reports()], ['postmarket'])
+            usstock.main(args)
+            self.assertEqual(len(archive.reports()), 2)
+            self.assertEqual(loader.call_count, 2)
+            self.assertEqual(render.call_count, 2)

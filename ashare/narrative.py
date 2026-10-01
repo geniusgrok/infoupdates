@@ -15,8 +15,15 @@ def headline(brief: Brief) -> str:
     if brief.kind == "morning":
         quotes = {quote.name: quote for quote in brief.overseas if isfinite(quote.last) and quote.last > 0}
         values = [quotes[name].pct if name in quotes else None for name in MORNING_ABROAD[:3]]
-        if any(value is None for value in values):
+        if any(value is None or not isfinite(value) for value in values):
             return "美股行情待确认"
+        dow, nasdaq, sp = values
+        if nasdaq > 0 > dow:
+            return "纳指上涨，道指回落"
+        if dow > 0 > nasdaq:
+            return "道指上涨，纳指回落"
+        if nasdaq > 0 and nasdaq - max(dow, sp) >= 0.8:
+            return "纳指领涨，其他指数相对滞后"
         if all(value > 0 for value in values):
             return "美股三大指数上涨"
         if all(value < 0 for value in values):
@@ -24,6 +31,11 @@ def headline(brief: Brief) -> str:
         if all(value == 0 for value in values):
             return "美股三大指数平收"
         return "美股三大指数涨跌互现"
+    if brief.hero.pct is not None and isfinite(brief.hero.pct) and brief.breadth:
+        if brief.hero.pct > 0 and brief.breadth.down > brief.breadth.up:
+            return "指数上涨，下跌家数更多"
+        if brief.hero.pct < 0 and brief.breadth.up > brief.breadth.down:
+            return "指数回落，上涨家数更多"
     weight, star = brief.index("上证50"), brief.index("科创50")
     if weight and star and weight.pct is not None and star.pct is not None and weight.pct > 0 > star.pct:
         return "权重微涨，科创回落" if weight.pct < 1 else "权重走强，科创回落"
@@ -32,15 +44,35 @@ def headline(brief: Brief) -> str:
 
 
 def focus_items(brief: Brief) -> list[FocusItem]:
-    watch = "关注领涨方向能否扩散，以及上涨家数与资金是否同步改善。"
-    if brief.narrative.style == "权重护盘":
-        watch = "观察权重强势能否扩散至成长板块，以及资金是否回流。"
-    items = build_focus(brief.news, now=brief.generated_at, market="ashare", watch=watch, event=brief.event)
+    items = build_focus(brief.news, now=brief.generated_at, market="ashare", watch=watch_line(brief), event=brief.event)
     if (brief.kind == "morning" and brief.event is not None
             and china_time(brief.event.at).date() < brief.edition_date
             and items[1].label == "下一事件"):
         items[1] = replace(items[1], label="假期关注")
     return items
+
+
+def watch_line(brief: Brief) -> str:
+    """观察条件承接本版结构；早盘把外盘变化转为A股开盘后的验证。"""
+    lead = headline(brief)
+    if brief.kind == "morning":
+        if lead.startswith(("纳指上涨", "纳指领涨")):
+            return "观察A股成长板块是否跟进，上涨家数与沪市成交额能否配合。"
+        if lead.startswith("道指上涨"):
+            return "观察A股权重与成长是否分化，上涨家数能否增加。"
+        if lead == "美股三大指数下跌":
+            return "观察A股主要指数能否企稳，下跌家数是否减少。"
+        return "观察A股开盘方向与外盘是否一致，上涨家数与沪市成交额能否配合。"
+    if lead == "指数上涨，下跌家数更多":
+        return "观察上涨家数能否超过下跌家数，指数强势能否扩散。"
+    if lead == "指数回落，上涨家数更多":
+        return "观察上涨家数能否维持优势，并带动主要指数企稳。"
+    return {
+        "权重护盘": "观察成长板块能否跟上权重，上涨家数是否增加。",
+        "成长占优": "观察成长强势能否扩散至权重板块，沪市成交额是否配合。",
+        "普涨": "观察上涨家数能否维持优势，沪市成交额是否配合。",
+        "普跌": "观察下跌家数能否减少，成长指数能否企稳。",
+    }.get(brief.narrative.style, "观察主要指数能否同向，上涨家数与沪市成交额是否配合。")
 
 
 def market_summary(brief: Brief) -> str:

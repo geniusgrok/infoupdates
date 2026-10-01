@@ -4,6 +4,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from math import isfinite
 
+from common.editorial import FocusItem, build_focus
 from common.news import NewsItem, news_key
 from .calendar import previous_trading_day, session_close, session_open
 from .models import Brief, Quote, new_york_time
@@ -192,24 +193,78 @@ def sector_leaders(brief: Brief) -> tuple[list[Quote], list[Quote]]:
     return strongest, weakest
 
 
+def structure_view(brief: Brief) -> tuple[str, str]:
+    """优先展示可核验的分化；板块ETF只代表板块，不冒充个股涨跌家数。"""
+    if brief.kind == "premarket":
+        quotes = fresh_futures(brief.futures, brief.generated_at, brief.edition_date)
+        quotes = [quote for quote in quotes if quote.pct is not None and isfinite(quote.pct)]
+        if len(quotes) < 3:
+            stocks = [quote for quote in current_quotes(brief.stocks, brief).values()
+                      if quote.session in {"overnight", "premarket"}]
+            lead = _direction_headline(stocks, "最新大型科技股")
+            return lead, "观察开盘后大型科技股能否同向，板块ETF是否跟进。"
+        growth, weight = "NQ=F", "YM=F"
+        noun, labels = "股指期货", ("纳指期货", "道指期货")
+        watch = "观察开盘后指数方向能否延续，板块ETF是否跟进。"
+    else:
+        quotes = [quote for quote in brief.indices if quote.symbol in {"^DJI", "^IXIC", "^GSPC"}]
+        growth, weight = "^IXIC", "^DJI"
+        noun, labels = "三大指数", ("纳指", "道指")
+        watch = "观察主要指数能否同向，板块ETF上涨范围是否扩大。"
+        sectors = {quote.symbol: quote for quote in current_quotes(brief.sectors, brief).values()
+                   if quote.session == "regular" and quote.trade_date == brief.reference_date
+                   and quote.pct is not None and isfinite(quote.pct)}
+        # 至少有8/11个同日收盘ETF，才判断跨板块扩散。
+        if len(sectors) >= 8:
+            technology = sectors.get("XLK")
+            others = [quote.pct for symbol, quote in sectors.items() if symbol != "XLK"]
+            if (technology is not None and technology.pct > 0 and technology.pct > max(others)
+                    and sum(value > 0 for value in others) <= len(others) / 2):
+                return "科技ETF领涨，其他板块跟进有限", "观察非科技板块ETF能否转强，科技强势是否扩散。"
+            sp = next((quote.pct for quote in quotes if quote.symbol == "^GSPC"), None)
+            positive = sum(quote.pct > 0 for quote in sectors.values())
+            negative = sum(quote.pct < 0 for quote in sectors.values())
+            if sp is not None and sp > 0 and negative > len(sectors) / 2:
+                return "标普上涨，多数板块ETF回落", "观察板块ETF上涨范围能否扩大，指数强势是否扩散。"
+            if sp is not None and sp < 0 and positive > len(sectors) / 2:
+                return "标普回落，多数板块ETF上涨", "观察板块ETF强势能否维持，并带动主要指数企稳。"
+    values = {quote.symbol: quote.pct for quote in quotes if quote.pct is not None and isfinite(quote.pct)}
+    if growth in values and weight in values:
+        if values[growth] > 0 > values[weight]:
+            return f"{labels[0]}上涨，{labels[1]}回落", f"观察{labels[1]}能否转强，并与{labels[0]}同向。"
+        if values[weight] > 0 > values[growth]:
+            return f"{labels[1]}上涨，{labels[0]}回落", f"观察{labels[0]}能否企稳，并与{labels[1]}同向。"
+        others = [value for symbol, value in values.items() if symbol != growth]
+        if others and values[growth] > 0 and values[growth] - max(others) >= 0.8:
+            return f"{labels[0]}领涨，其他指数相对滞后", "观察其他指数能否跟进，板块ETF上涨范围是否扩大。"
+    if len(values) >= 3 and all(value < 0 for value in values.values()):
+        watch = "观察主要指数能否企稳，板块ETF跌势是否收敛。"
+    return _direction_headline(quotes, noun), watch
+
+
+def focus_items(brief: Brief) -> list[FocusItem]:
+    return build_focus(brief.news, brief.generated_at, market="usstock", event=brief.event,
+                       watch=structure_view(brief)[1])
+
+
 def build_narrative(brief: Brief) -> tuple[str, str, str]:
     core = [quote for quote in brief.indices if quote.symbol in {"^DJI", "^IXIC", "^GSPC"}]
     if brief.kind == "premarket":
         current_futures = fresh_futures(brief.futures, brief.generated_at, brief.edition_date)
         usable_futures = [quote for quote in current_futures if quote.pct is not None and isfinite(quote.pct)]
         if len(usable_futures) >= 3:
-            headline = _direction_headline(usable_futures, "股指期货")
+            headline = structure_view(brief)[0]
             sentiment = _mood(usable_futures, [])
             mood = f"盘前情绪{sentiment}（最新股指期货参考）"
         else:
             current_stocks = [quote for quote in brief.stocks
                               if quote.session in {"overnight", "premarket"}]
             usable_stocks = [quote for quote in current_stocks if quote.pct is not None and isfinite(quote.pct)]
-            headline = _direction_headline(usable_stocks, "最新大型科技股")
+            headline = structure_view(brief)[0]
             sentiment = _mood(usable_stocks, [])
             mood = f"盘前情绪{sentiment}（最新大型科技股参考）" if len(usable_stocks) >= 3 else "盘前情绪待确认（最新延长交易行情不足）"
         return headline, sentiment, f"{mood}，{activity_summary(brief)}。"
-    headline = _direction_headline(core, "三大指数")
+    headline = structure_view(brief)[0]
     sentiment = _mood(core, brief.sectors)
     scope = "情绪" if brief.reference_date == brief.edition_date else "参考收盘情绪"
     activity = activity_summary(brief).replace("SPY披露日线股数代理", "SPY股数代理")

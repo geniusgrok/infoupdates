@@ -119,6 +119,17 @@ class ArchiveTests(unittest.TestCase):
         render.assert_called_once()
         self.assertFalse(old.exists())
 
+    def test_complete_files_without_core_data_do_not_block_retry(self):
+        self.publish()
+        row = self.archive.reports()[0]
+        data = row['data'] | {'indices': []}
+        with self.archive.connect(write=True) as db:
+            db.execute('UPDATE reports SET data=? WHERE id=?', (json.dumps(data), row['id']))
+        self.assertFalse(self.archive.reuse('ashare', 'close', self.now.date(), self.stem))
+        self.publish()
+        self.assertEqual(len(self.archive.reports()), 1)
+        self.assertTrue(self.archive.reuse('ashare', 'close', self.now.date(), self.stem))
+
     def test_previous_news_uses_actual_focus_and_excludes_self_future_and_missing(self):
         self.data.news = [NewsItem(self.now, '央行公布最新货币政策安排', '见闻', rank=40),
                           NewsItem(self.now, '上市公司发布最新业绩报告', '东财', rank=30)]

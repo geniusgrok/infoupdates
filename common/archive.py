@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .editorial import select_focus_news
 from .news import NewsItem
+from .publication import InsufficientData, publication_issue
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS captures (
@@ -150,8 +151,10 @@ class Archive:
         ).fetchone()
 
     def _complete(self, row) -> bool:
-        return row is not None and all((self.root / row["path"] / name).is_file()
-                                       for name in ("image.png", "summary.txt", "data.json"))
+        if row is None or not all((self.root / row["path"] / name).is_file()
+                                  for name in ("image.png", "summary.txt", "data.json")):
+            return False
+        return not publication_issue(row["market"], json.loads(row["data"]))
 
     def _export(self, row, stem: Path) -> tuple[Path, Path]:
         folder = self.root / row["path"]
@@ -161,7 +164,7 @@ class Archive:
         return image, text
 
     def reuse(self, market: str, session: str, day: date, stem: Path) -> bool:
-        """已有完整结果就恢复输出并提示；缺失产物按未完成处理。"""
+        """已有合格完整结果就恢复输出；产物或核心行情不足仍可重试。"""
         with self.connect(write=True) as db:
             row = self._result(db, market, session, day.isoformat())
             if not self._complete(row):
@@ -195,6 +198,9 @@ class Archive:
                 capture = db.execute("SELECT * FROM captures WHERE id=?", (capture_id,)).fetchone()
                 if capture is None or capture["market"] != market:
                     raise ValueError("归档缺少本次原始数据")
+                issue = publication_issue(market, data)
+                if issue:
+                    raise InsufficientData(f"{issue}；采集已保存，本版未发布，可稍后重试")
                 parent.mkdir(parents=True, exist_ok=True)
                 stage = Path(tempfile.mkdtemp(prefix=".pending-", dir=parent))
                 render(brief, stage / "image.png")

@@ -9,6 +9,7 @@ from common.archive import Archive
 from common.editorial import deprioritize_seen_news
 from common.events import load_next_event
 from common.history import build_history
+from common.publication import InsufficientData
 from review.bls import collect_releases
 from review.events import track_events
 
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> None:
         with archive.run():
             now = datetime.now(NY)
             pending = []
+            failures = []
             for kind in kinds:
                 day = edition_date(kind, now)
                 stem = output / f"us-{kind}-{day}"
@@ -53,13 +55,19 @@ def main(argv: list[str] | None = None) -> None:
                     brief.news = deprioritize_seen_news(brief.news, archive.previous_key_news(
                         "usstock", brief.kind, brief.edition_date, now))
                     stem = output / f"us-{brief.kind}-{brief.edition_date.isoformat()}"
-                    image, text = archive.publish("usstock", brief, capture_id, render_png,
-                                                  social_copy(brief), stem, force=args.force)
+                    try:
+                        image, text = archive.publish("usstock", brief, capture_id, render_png,
+                                                      social_copy(brief), stem, force=args.force)
+                    except InsufficientData as exc:
+                        failures.append(str(exc))
+                        continue
                     print(text.read_text(encoding="utf-8"))
                     print(image.resolve())
                     print(text.resolve())
                     print()
             print(build_history(archive).resolve())
+            if failures:
+                raise InsufficientData("；".join(failures))
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.error(f"运行失败：{exc}")
 

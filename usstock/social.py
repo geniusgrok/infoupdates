@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from math import isfinite
 
-from common.editorial import build_focus
 from common.format import fmt_pct, fmt_px, weekday_cn
 from .models import Brief, Quote, new_york_time, quote_clock
-from .narrative import afterhours_quotes, available_quotes, current_quotes, sector_leaders, selected_stocks
+from .narrative import afterhours_quotes, available_quotes, current_quotes, focus_items, sector_leaders, selected_stocks
 
 
 def _phase(quote: Quote) -> str:
@@ -104,8 +103,7 @@ def social_copy(brief: Brief) -> str:
         lines.append("  • " + _quote_line(label, sectors))
     else:
         lines.append("  • 板块ETF：最新相对强弱待确认。")
-    focus = build_focus(brief.news, brief.generated_at, market="usstock", event=brief.event,
-                        watch="关注通胀、利率与科技业绩能否支持当前走势。")
+    focus = focus_items(brief)
     lines.extend(["", "【两条重点】"])
     for number, item in enumerate(focus, start=1):
         if number > 1:

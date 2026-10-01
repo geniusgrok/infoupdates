@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from ashare.calendar import edition_date as a_edition
 from ashare.compose import build_brief as a_brief
-from ashare.models import CST, MarketData as AData, Quote as AQuote, TurnoverComparison
-from ashare.narrative import market_summary
+from ashare.models import CST, Breadth, MarketData as AData, Quote as AQuote, TurnoverComparison
+from ashare.narrative import focus_items as a_focus, headline as a_headline, market_summary
 from common.archive import Archive
 from common.editorial import deprioritize_seen_news, select_focus_news
 from common.events import BLS_URL, FED_URL, CalendarEvent, fomc_events, load_events
@@ -16,12 +16,57 @@ from review.bls import calculate, collect_releases, values
 from review.events import comparisons, record_metric, track_events
 from usstock.calendar import session_close
 from usstock.compose import build_brief as u_brief
-from usstock.models import NY, MarketData as UData, Quote as UQuote
+from usstock.models import NY, SECTOR_NAMES, MarketData as UData, Quote as UQuote
+from usstock.narrative import focus_items as u_focus
 from usstock.social import social_copy
 from weekly.compose import build_weekly
 
 
 class FinanceTests(unittest.TestCase):
+    def test_ashare_structure_and_watch_follow_breadth_and_overseas_divergence(self):
+        now = datetime(2026, 9, 30, 18, tzinfo=CST)
+        data = AData([AQuote('sh000001', '上证指数', 3000, .5, trade_day='2026-09-30', session='15:30:00')],
+                     breadth=Breadth(2000, 3000, 5000, None, None))
+        brief = a_brief('close', data, now)
+        self.assertEqual(a_headline(brief), '指数上涨，下跌家数更多')
+        self.assertIn('上涨家数能否超过下跌家数', a_focus(brief)[1].title)
+        data.indices[0].pct = -.5
+        data.breadth = Breadth(3000, 2000, 5000, None, None)
+        brief = a_brief('close', data, now)
+        self.assertEqual(a_headline(brief), '指数回落，上涨家数更多')
+        self.assertIn('主要指数企稳', a_focus(brief)[1].title)
+        data.overseas = [AQuote('gb_dji', '道琼斯', 40000, -.5), AQuote('gb_ixic', '纳斯达克', 20000, .8),
+                         AQuote('gb_inx', '标普500', 5000, .2)]
+        brief = a_brief('morning', data, now)
+        self.assertEqual(a_headline(brief), '纳指上涨，道指回落')
+        self.assertIn('A股成长板块', a_focus(brief)[1].title)
+
+    def test_usstock_structure_requires_enough_same_session_etfs_and_uses_latest_futures(self):
+        now = datetime(2026, 9, 30, 16, 30, tzinfo=NY)
+        at = now.replace(hour=16, minute=0)
+        indices = {symbol: UQuote(symbol, name, 100, .2, asof=at) for symbol, name in
+                   (('^GSPC', '标普500'), ('^IXIC', '纳斯达克'), ('^DJI', '道琼斯'))}
+        sectors = {symbol: UQuote(symbol, name, 100, 2 if symbol == 'XLK' else -.2, asof=at)
+                   for symbol, name in SECTOR_NAMES.items()}
+        brief = u_brief('postmarket', UData(completed=indices | sectors), now)
+        self.assertEqual(brief.headline, '科技ETF领涨，其他板块跟进有限')
+        self.assertIn('非科技板块ETF能否转强', u_focus(brief)[1].title)
+        for selected in (dict(list(sectors.items())[:7]),
+                         {symbol: UQuote(symbol, quote.name, 100, quote.pct, asof=at - timedelta(days=1))
+                          for symbol, quote in sectors.items()}):
+            brief = u_brief('postmarket', UData(completed=indices | selected), now)
+            self.assertEqual(brief.headline, '三大指数集体走高')
+        sectors['XLK'].pct = -.1
+        brief = u_brief('postmarket', UData(completed=indices | sectors), now)
+        self.assertEqual(brief.headline, '标普上涨，多数板块ETF回落')
+        self.assertNotIn('个股', brief.headline)
+        now = now.replace(hour=8, minute=0)
+        futures = {symbol: UQuote(symbol, name, 100, pct, asof=now - timedelta(minutes=5), session='futures')
+                   for symbol, name, pct in (('NQ=F', '纳指期货', .8), ('YM=F', '道指期货', -.2), ('ES=F', '标普期货', .1))}
+        brief = u_brief('premarket', UData(quotes=futures), now)
+        self.assertEqual(brief.headline, '纳指期货上涨，道指期货回落')
+        self.assertIn('道指期货能否转强', u_focus(brief)[1].title)
+
     def test_repeat_news_penalty_preserves_new_numbers_and_progress(self):
         now = datetime(2026, 10, 1, 8, tzinfo=NY)
         title = '美国CPI同比上涨0.5%'

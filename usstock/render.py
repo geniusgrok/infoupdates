@@ -15,7 +15,7 @@ from .models import (
 )
 from .narrative import (
     afterhours_quotes as _afterhours, available_quotes as _available,
-    current_quotes as _current, sector_leaders, selected_stocks as _selected_stocks,
+    current_quotes as _current, focus_items, sector_leaders, selected_stocks as _selected_stocks,
 )
 
 
@@ -192,8 +192,7 @@ def _sectors(canvas: Canvas, brief: Brief) -> None:
 
 
 def _focus(canvas: Canvas, brief: Brief) -> None:
-    items = build_focus(brief.news, brief.generated_at, market="usstock", event=brief.event,
-                        watch="关注通胀、利率与科技业绩能否支持当前走势。")
+    items = focus_items(brief)
     canvas.card(28, 1128, 1024, 428)
     canvas.heading(50, 1150, "最重要的两件事")
     for i, item in enumerate(items[:2]):
