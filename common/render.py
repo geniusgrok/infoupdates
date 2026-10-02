@@ -125,13 +125,13 @@ class Canvas:
 def _watermark(image: Image.Image) -> Image.Image:
     """Large, low-opacity name centered on the finished poster."""
     label = "一张图盘前盘后"
-    face = font(112, "medium")
+    face = font(156, "medium")
     probe = ImageDraw.Draw(Image.new("L", (1, 1)))
     left, top, right, bottom = probe.textbbox((0, 0), label, font=face)
-    pad = 40
+    pad = 48
     mask = Image.new("L", (right - left + pad * 2, bottom - top + pad * 2), 0)
     ImageDraw.Draw(mask).text((pad - left, pad - top), label, font=face, fill=22)
-    rotated = mask.rotate(-16, expand=True, resample=Image.Resampling.BICUBIC)
+    rotated = mask.rotate(-32, expand=True, resample=Image.Resampling.BICUBIC)
     full = Image.new("L", image.size, 0)
     full.paste(rotated, ((image.width - rotated.width) // 2, (image.height - rotated.height) // 2))
     tint = Image.new("RGBA", image.size, (232, 234, 236, 0))
