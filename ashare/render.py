@@ -165,7 +165,5 @@ def render_png(brief: Brief, path: Path) -> Path:
     _focus(canvas, brief)
     canvas.text(28, 1590, "行业日期未披露 · 精简摘要及数据说明见文案", 18, MUTED, max_width=600)
     canvas.text(1052, 1590, "公开行情可能延迟 · 不构成投资建议", 18, MUTED, align="right", max_width=420)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.image.save(path, optimize=True)
-    return path
+    canvas.save(path)
+    return Path(path)

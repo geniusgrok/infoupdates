@@ -49,6 +49,5 @@ def render_png(brief: dict, path: Path) -> Path:
     canvas.paragraph(50, 1474, "用随后数据与价格反应验证；方向一致不等于由单一消息导致。", 980, 26, 2, MUTED, pitch=32)
     canvas.text(28, 1590, "统计基准、来源与历史完整度见文字版", 18, MUTED, max_width=590)
     canvas.text(1052, 1590, "公开行情可能延迟 · 不构成投资建议", 18, MUTED, align="right", max_width=420)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.image.save(path, optimize=True)
+    canvas.save(path)
     return path
