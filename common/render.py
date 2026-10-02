@@ -114,6 +114,30 @@ class Canvas:
             self.draw.rounded_rectangle((x + i * 12, y + 32 - height, x + i * 12 + 8, y + 32), radius=1, fill=AMBER)
         self.text(x + 50, y - 1, label, 36, TEXT, "bold")
 
+    def save(self, path: Path) -> None:
+        self.image = _watermark(self.image)
+        self.draw = ImageDraw.Draw(self.image)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.image.save(path, optimize=True)
+
+
+def _watermark(image: Image.Image) -> Image.Image:
+    """Large, low-opacity name centered on the finished poster."""
+    label = "一张图盘前盘后"
+    face = font(156, "medium")
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    left, top, right, bottom = probe.textbbox((0, 0), label, font=face)
+    pad = 48
+    mask = Image.new("L", (right - left + pad * 2, bottom - top + pad * 2), 0)
+    ImageDraw.Draw(mask).text((pad - left, pad - top), label, font=face, fill=22)
+    rotated = mask.rotate(-32, expand=True, resample=Image.Resampling.BICUBIC)
+    full = Image.new("L", image.size, 0)
+    full.paste(rotated, ((image.width - rotated.width) // 2, (image.height - rotated.height) // 2))
+    tint = Image.new("RGBA", image.size, (232, 234, 236, 0))
+    tint.putalpha(full)
+    return Image.alpha_composite(image.convert("RGBA"), tint).convert("RGB")
+
 
 def change_color(value: float | None):
     if value is None or not isfinite(value) or abs(value) < 0.005:

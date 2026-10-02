@@ -220,7 +220,5 @@ def render_png(brief: Brief, path: Path) -> Path:
     source = " / ".join(providers) if providers else "公开行情暂缺"
     canvas.text(28, 1585, f"{source} · {status}", 18, MUTED, max_width=650)
     canvas.text(1052, 1585, "美东时间 · 红涨绿跌 · 不构成投资建议", 18, MUTED, align="right", max_width=410)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.image.save(path, optimize=True)
-    return path
+    canvas.save(path)
+    return Path(path)
