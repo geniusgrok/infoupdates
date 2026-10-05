@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from datetime import date, datetime, time
+from functools import partial
 from pathlib import Path
 
 from common.archive import Archive
@@ -10,6 +11,7 @@ from common.editorial import deprioritize_seen_news
 from common.events import load_next_event
 from common.history import build_history
 from common.publication import InsufficientData
+from common.render import DEFAULT_WATERMARK
 from common.replay import dated_brief
 from review.bls import collect_releases
 from review.events import track_events
@@ -29,7 +31,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", default="output", help="图片与文字输出目录")
     parser.add_argument("--archive", default="archive", help="持久归档目录；各模块应共用")
     parser.add_argument("--force", action="store_true", help="重新生成并覆盖；指定日期时优先重绘归档")
+    parser.add_argument("--watermark", default=DEFAULT_WATERMARK, help="自定义图片水印；空文字关闭；更换已有图片需 --force")
     args = parser.parse_args(argv)
+    render = partial(render_png, watermark=args.watermark)
     kinds = ('close', 'morning') if args.session == "all" else (args.session,)
     output = Path(args.output)
     try:
@@ -54,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
                 if args.date and (day < now.date() or (kind, day.isoformat()) in saved):
                     try:
                         brief, capture_id = dated_brief(archive, 'ashare', kind, day, now)
-                        image, text = archive.publish('ashare', brief, capture_id, render_png,
+                        image, text = archive.publish('ashare', brief, capture_id, render,
                                                       social_copy(brief), stem, force=args.force or late)
                         print(text.read_text(encoding='utf-8'))
                         print(image.resolve())
@@ -84,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
                         "ashare", brief.kind, brief.edition_date, now))
                     stem = output / f"{brief.kind}-{brief.edition_date.isoformat()}"
                     try:
-                        image, text = archive.publish("ashare", brief, capture_id, render_png,
+                        image, text = archive.publish("ashare", brief, capture_id, render,
                                                       social_copy(brief), stem, force=args.force)
                     except InsufficientData as exc:
                         failures.append(str(exc))

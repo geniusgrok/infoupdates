@@ -5,7 +5,7 @@ from pathlib import Path
 
 from common.editorial import build_focus
 from common.format import fmt_pct, fmt_px, weekday_cn
-from common.render import AMBER, MUTED, TEXT, WIDTH, Canvas, change_color
+from common.render import AMBER, DEFAULT_WATERMARK, MUTED, TEXT, WIDTH, Canvas, change_color
 
 from .calendar import previous_trading_day
 from .models import (
@@ -108,13 +108,13 @@ def _macro_symbols(brief: Brief) -> list[str]:
 def _header(canvas: Canvas, brief: Brief) -> None:
     day = brief.edition_date
     now = new_york_time(brief.generated_at)
+    session = "美股盘前" if brief.kind == "premarket" else "美股收盘"
+    title = f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')}·{session} {brief.headline}"
     canvas.text(32, 24, "INFOUPDATES", 26, AMBER, "bold")
-    canvas.text(270, 24, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · {brief.title}",
-                30, TEXT, "bold", max_width=930)
     clock_label = "历史参考" if any(note.startswith("历史") for note in brief.notes) else "生成"
     canvas.text(1588, 29, clock_label + now.strftime("%m.%d %H:%M %Z"), 20, MUTED,
                 align="right", max_width=370)
-    canvas.text(32, 70, brief.headline, 40, AMBER, "bold", max_width=1556, min_size=32)
+    canvas.text(32, 70, title, 36, AMBER, "bold", max_width=1556, min_size=24)
     canvas.text(32, 122, brief.market_summary, 26, TEXT, "medium", max_width=1556, min_size=22)
     canvas.line(32, 156, 1588, color=AMBER, width=2)
 
@@ -262,8 +262,8 @@ def _macro(canvas: Canvas, brief: Brief, *, expanded: bool = False) -> None:
             canvas.text(1074, y + 54, quote.source, 17, MUTED, max_width=492)
 
 
-def render_png(brief: Brief, path: Path) -> Path:
-    canvas = Canvas()
+def render_png(brief: Brief, path: Path, *, watermark: str = DEFAULT_WATERMARK) -> Path:
+    canvas = Canvas(watermark)
     canvas.draw.rectangle((0, 0, WIDTH, 6), fill=AMBER)
     _header(canvas, brief)
     _primary(canvas, brief)

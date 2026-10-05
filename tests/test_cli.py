@@ -19,7 +19,7 @@ from weekly import __main__ as weekly
 
 class CliTests(unittest.TestCase):
     @staticmethod
-    def render(brief, path):
+    def render(brief, path, *, watermark="一张图盘前盘后"):
         path.write_bytes(b'image')
 
     @staticmethod
@@ -59,9 +59,10 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(loader.call_count, 1)
                 self.assertEqual(render.call_count, count)
                 self.assertEqual({path.name: path.read_bytes() for path in files}, original)
-                cli.main([*args, '--force'])
+                cli.main([*args, '--force', '--watermark', '财经观察'])
                 self.assertEqual(loader.call_count, 2)
                 self.assertEqual(render.call_count, count * 2)
+                self.assertEqual(render.call_args.kwargs['watermark'], '财经观察')
                 archive = Archive(root / 'archive')
                 saved = archive.reports()
                 render.side_effect = OSError('绘图失败')
@@ -104,9 +105,9 @@ class CliTests(unittest.TestCase):
                 stack.enter_context(patch.object(cli, 'load_next_event', return_value=None))
                 stack.enter_context(patch.object(cli, 'collect_releases'))
                 chosen = []
-                def render(brief, path):
+                def render(brief, path, *, watermark):
                     chosen.append(select_focus_news(brief.news, brief.generated_at).title)
-                    self.render(brief, path)
+                    self.render(brief, path, watermark=watermark)
                 stack.enter_context(patch.object(cli, 'render_png', side_effect=render))
                 cli.main(['--archive', str(Path(folder) / 'archive'), '--output', str(Path(folder) / 'output')])
                 self.assertEqual(len(chosen), 2)
@@ -217,8 +218,14 @@ class CliTests(unittest.TestCase):
                 cli.main(args)
                 self.assertIn('已有运行结果', log.getvalue())
                 render.assert_not_called()
-                cli.main([*args, '--force'])
+                cli.main([*args, '--force', '--watermark', '财经观察'])
                 render.assert_called_once()
+                self.assertEqual(render.call_args.kwargs['watermark'], '财经观察')
+                second_output = Path(folder) / 'other-watermark'
+                cli.main([*args, '--force', '--watermark', '每日市场', '--output', str(second_output)])
+                self.assertEqual(render.call_args.kwargs['watermark'], '每日市场')
+                self.assertEqual(len(list(second_output.glob('*.png'))), 1)
+                self.assertEqual(len(list((Path(folder) / 'output').glob('*.png'))), 1)
                 current = archive.reports()[0]
                 self.assertEqual(current['data'][bag], original[bag])
                 self.assertEqual(current['data']['generated_at'], original['generated_at'])
@@ -226,7 +233,7 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(current['capture_id'], capture_id)
                 (archive.root / current['path'] / 'image.png').unlink()
                 cli.main(args)  # SQLite 中的完整数据足以补绘，不必重新采集今天的报价。
-                self.assertEqual(render.call_count, 2)
+                self.assertEqual(render.call_count, 3)
                 self.assertEqual(archive.reports()[0]['data'][bag], original[bag])
                 self.assertEqual(len(archive.snapshots()), 1)
                 loader.assert_not_called()

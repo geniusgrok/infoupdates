@@ -13,6 +13,11 @@ on:
         type: string
         required: false
         default: ''
+      watermark:
+        description: Watermark text; blank disables it; use force to change existing results
+        type: string
+        required: false
+        default: 一张图盘前盘后
       force:
         description: Regenerate and replace existing results
         type: boolean
@@ -69,6 +74,7 @@ jobs:
           BRIEF_REQUEST: ${{ inputs.edition }}
           BRIEF_FORCE: ${{ inputs.force }}
           BRIEF_DATE: ${{ inputs.date }}
+          BRIEF_WATERMARK: ${{ inputs.watermark }}
         run: |
           python - <<'PY'
           import os
@@ -84,6 +90,7 @@ jobs:
 
           request = os.environ.get('BRIEF_REQUEST', '')
           force = ['--force'] if os.environ.get('BRIEF_FORCE') == 'true' else []
+          watermark = ['--watermark=' + os.environ.get('BRIEF_WATERMARK', '')] if request else []
           selected_date = os.environ.get('BRIEF_DATE', '').strip()
           if selected_date and date.fromisoformat(selected_date).isoformat() != selected_date:
               raise ValueError('date must use YYYY-MM-DD')
@@ -100,16 +107,16 @@ jobs:
               'usstock-postmarket': (usstock, 'postmarket'),
           }
           if request == 'all':
-              jobs = [(ashare, ['all', *day, *force]), (usstock, ['all', *day, *force])]
+              jobs = [(ashare, ['all', *day, *force, *watermark]), (usstock, ['all', *day, *force, *watermark])]
           if request in editions:
               module, session = editions[request]
-              jobs = [(module, [session, *day, *force])]
+              jobs = [(module, [session, *day, *force, *watermark])]
           if request == 'weekly':
               week = []
               if selected_date:
                   selected = date.fromisoformat(selected_date)
                   week = ['--week', (selected - timedelta(days=selected.weekday())).isoformat()]
-              jobs = [(weekly, ['--backfill', *week, *force])]
+              jobs = [(weekly, ['--backfill', *week, *force, *watermark])]
           if not request:
               if a_trading(cn.date()) and cn.hour == 8:
                   jobs.append((ashare, ['morning']))

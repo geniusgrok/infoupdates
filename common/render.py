@@ -17,6 +17,7 @@ TEXT = (242, 244, 246)
 MUTED = (164, 172, 182)
 RED = (255, 92, 92)
 GREEN = (38, 196, 146)
+DEFAULT_WATERMARK = "一张图盘前盘后"
 FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 
 
@@ -45,9 +46,10 @@ def ellipsize(value: str, face: ImageFont.FreeTypeFont, width: float) -> str:
 
 
 class Canvas:
-    def __init__(self) -> None:
+    def __init__(self, watermark: str = DEFAULT_WATERMARK) -> None:
         self.image = Image.new("RGB", (WIDTH, HEIGHT), BG)
         self.draw = ImageDraw.Draw(self.image)
+        self.watermark = watermark
 
     def text(self, x: float, y: float, value: str, size: int = 32,
              color: tuple[int, int, int] = TEXT, weight: str = "regular",
@@ -130,17 +132,24 @@ class Canvas:
         self.text(x + 50, y - 1, label, 36, TEXT, "bold")
 
     def save(self, path: Path) -> None:
-        self.image = _watermark(self.image)
+        self.image = _watermark(self.image, self.watermark)
         self.draw = ImageDraw.Draw(self.image)
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.image.save(path, optimize=True)
 
 
-def _watermark(image: Image.Image) -> Image.Image:
-    """Large, low-opacity name centered on the finished poster."""
-    label = "一张图盘前盘后"
+def _watermark(image: Image.Image, label: str) -> Image.Image:
+    """居中叠加浅色斜水印；长名称缩小，空文字不绘制。"""
+    label = " ".join(label.split())
+    if not label:
+        return image
     face = font(156, "medium")
+    max_width = image.width * 0.8
+    if text_width(label, face) > max_width:
+        size = max(1, int(156 * max_width / text_width(label, face)))
+        face = font(size, "medium")
+        label = ellipsize(label, face, max_width)
     probe = ImageDraw.Draw(Image.new("L", (1, 1)))
     left, top, right, bottom = probe.textbbox((0, 0), label, font=face)
     pad = 48

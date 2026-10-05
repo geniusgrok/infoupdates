@@ -4,7 +4,7 @@ from math import isfinite
 from pathlib import Path
 
 from common.format import fmt_amount, fmt_pct, fmt_px, fmt_yi, weekday_cn
-from common.render import AMBER, GREEN, MUTED, RED, TEXT, WIDTH, Canvas, change_color
+from common.render import AMBER, DEFAULT_WATERMARK, GREEN, MUTED, RED, TEXT, WIDTH, Canvas, change_color
 
 from .calendar import is_trading_day
 from .models import Brief, Quote, china_time
@@ -52,15 +52,13 @@ def _reference(brief: Brief) -> str:
 def _header(canvas: Canvas, brief: Brief, quotes: dict[str, Quote]) -> None:
     morning = brief.kind == "morning"
     day = brief.edition_date
-    title = "A股早盘精选" if morning else "A股盘中快照" if brief.is_intraday else "A股收盘精选"
+    session = "A股早盘" if morning else "A股盘中" if brief.is_intraday else "A股收盘"
+    title = f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')}·{session} {headline(brief)}"
     canvas.text(32, 24, "INFOUPDATES", 24, AMBER, "bold")
-    canvas.text(252, 22, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · {title}",
-                28, TEXT, "bold", max_width=1090)
     clock_label = "历史参考" if any(note.startswith("历史") for note in brief.notes) else "生成"
     canvas.text(1588, 29, clock_label + china_time(brief.generated_at).strftime("%m.%d %H:%M CST"),
                 18, MUTED, align="right")
-    canvas.text(32, 70, headline(brief), 40, AMBER, "bold", max_width=1280, min_size=34)
-    canvas.text(1588, 84, "外盘参考" if morning else brief.narrative.style, 24, MUTED, align="right", max_width=240)
+    canvas.text(32, 70, title, 36, AMBER, "bold", max_width=1556, min_size=24)
     canvas.text(32, 122, market_summary(brief), 26, TEXT, "medium", max_width=1556, min_size=22)
     canvas.line(32, 156, 1588, color=AMBER, width=2)
 
@@ -335,8 +333,8 @@ def _references(canvas: Canvas, brief: Brief, quotes: dict[str, Quote], compact:
         canvas.text(1074, top + 119, "补充行情暂缺", 22, MUTED, max_width=492)
 
 
-def render_png(brief: Brief, path: Path) -> Path:
-    canvas = Canvas()
+def render_png(brief: Brief, path: Path, *, watermark: str = DEFAULT_WATERMARK) -> Path:
+    canvas = Canvas(watermark)
     canvas.draw.rectangle((0, 0, WIDTH, 6), fill=AMBER)
     quotes = _quotes(brief)
     _header(canvas, brief, quotes)

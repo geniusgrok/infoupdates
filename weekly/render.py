@@ -5,11 +5,11 @@ from pathlib import Path
 
 from ashare.models import CST
 from common.format import fmt_pct, weekday_cn
-from common.render import AMBER, MUTED, TEXT, WIDTH, Canvas, change_color
+from common.render import AMBER, DEFAULT_WATERMARK, MUTED, TEXT, WIDTH, Canvas, change_color
 
 
-def render_png(brief: dict, path: Path) -> Path:
-    canvas = Canvas()
+def render_png(brief: dict, path: Path, *, watermark: str = DEFAULT_WATERMARK) -> Path:
+    canvas = Canvas(watermark)
     canvas.draw.rectangle((0, 0, WIDTH, 6), fill=AMBER)
     day = date.fromisoformat(brief["edition_date"])
     now = datetime.fromisoformat(brief["generated_at"]).astimezone(CST)
