@@ -15,7 +15,7 @@ from .render import render_png
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="用已归档数据生成1080×1620跨市场每周精选")
+    parser = argparse.ArgumentParser(description="用已归档数据生成1620×1080横版跨市场每周精选")
     parser.add_argument("--week", type=date.fromisoformat, help="交易周的周一日期；默认最近结束的一周")
     parser.add_argument("--archive", default="archive", help="持久归档目录；各模块应共用")
     parser.add_argument("--output", default="output", help="图片与文字输出目录")

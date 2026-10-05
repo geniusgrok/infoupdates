@@ -115,12 +115,14 @@ def social_copy(brief: Brief) -> str:
     limits = _limitations(brief)
     if limits:
         lines.append(limits.removeprefix("数据说明："))
+    lines.extend(note for note in brief.notes if note.startswith(("历史", "实际采集")))
     shown = primary + stocks + after + sectors
     if brief.kind == "postmarket" and brief.activity is not None:
         shown.append(brief.activity)
     providers = sorted({quote.source.split("（", 1)[0] for quote in shown})
     now = new_york_time(brief.generated_at)
-    lines.append(f"生成{now:%m-%d %H:%M ET}；行情来源{' / '.join(providers) or '暂缺'}。")
+    clock_label = "历史参考" if any(note.startswith("历史") for note in brief.notes) else "生成"
+    lines.append(f"{clock_label}{now:%m-%d %H:%M ET}；行情来源{' / '.join(providers) or '暂缺'}。")
     if brief.kind == "postmarket":
         lines.append("SPY为供应商披露日线股数代理，非全市场成交额。")
     lines.append("公开行情可能延迟，不构成投资建议。")

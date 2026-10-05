@@ -7,7 +7,12 @@ on:
         description: Generate
         type: choice
         default: all
-        options: [all, ashare, usstock, weekly]
+        options: [all, ashare, ashare-morning, ashare-close, usstock, usstock-premarket, usstock-postmarket, weekly]
+      date:
+        description: Edition date YYYY-MM-DD; weekly uses its containing week; blank uses current editions
+        type: string
+        required: false
+        default: ''
       force:
         description: Regenerate and replace existing results
         type: boolean
@@ -63,10 +68,11 @@ jobs:
         env:
           BRIEF_REQUEST: ${{ inputs.edition }}
           BRIEF_FORCE: ${{ inputs.force }}
+          BRIEF_DATE: ${{ inputs.date }}
         run: |
           python - <<'PY'
           import os
-          from datetime import datetime, timezone
+          from datetime import date, datetime, timedelta, timezone
           from ashare.__main__ import main as ashare
           from ashare.calendar import is_trading_day as a_trading
           from ashare.models import CST
@@ -78,27 +84,65 @@ jobs:
 
           request = os.environ.get('BRIEF_REQUEST', '')
           force = ['--force'] if os.environ.get('BRIEF_FORCE') == 'true' else []
+          selected_date = os.environ.get('BRIEF_DATE', '').strip()
+          if selected_date and date.fromisoformat(selected_date).isoformat() != selected_date:
+              raise ValueError('date must use YYYY-MM-DD')
+          day = ['--date', selected_date] if selected_date else []
           now = datetime.now(timezone.utc)
           cn, us = now.astimezone(CST), now.astimezone(NY)
-          if request in ('all', 'ashare'):
-              ashare(['all', *force])
-          if request in ('all', 'usstock'):
-              usstock(['all', *force])
+          jobs = []
+          editions = {
+              'ashare': (ashare, 'all'),
+              'ashare-morning': (ashare, 'morning'),
+              'ashare-close': (ashare, 'close'),
+              'usstock': (usstock, 'all'),
+              'usstock-premarket': (usstock, 'premarket'),
+              'usstock-postmarket': (usstock, 'postmarket'),
+          }
+          if request == 'all':
+              jobs = [(ashare, ['all', *day, *force]), (usstock, ['all', *day, *force])]
+          if request in editions:
+              module, session = editions[request]
+              jobs = [(module, [session, *day, *force])]
           if request == 'weekly':
-              weekly(['--backfill', *force])
+              week = []
+              if selected_date:
+                  selected = date.fromisoformat(selected_date)
+                  week = ['--week', (selected - timedelta(days=selected.weekday())).isoformat()]
+              jobs = [(weekly, ['--backfill', *week, *force])]
           if not request:
               if a_trading(cn.date()) and cn.hour == 8:
-                  ashare(['morning'])
+                  jobs.append((ashare, ['morning']))
               if a_trading(cn.date()) and cn.hour == 15:
-                  ashare(['close'])
+                  jobs.append((ashare, ['close']))
               if u_trading(us.date()) and us.hour == 8:
-                  usstock(['premarket'])
+                  jobs.append((usstock, ['premarket']))
               if u_trading(us.date()) and us.hour == 16:
-                  usstock(['postmarket'])
+                  jobs.append((usstock, ['postmarket']))
               if cn.weekday() == 5 and cn.hour == 10:
-                  weekly(['--backfill', *force])
+                  jobs.append((weekly, ['--backfill', *force]))
+          failed = False
+          for module, arguments in jobs:
+              try:
+                  module(arguments)
+              except SystemExit as exc:
+                  if exc.code:
+                      failed = True
+                      print(f'{module.__module__} failed: {exc.code}', flush=True)
           review(['history'])
+          if failed:
+              raise SystemExit(1)
           PY
+      - name: Downloadable images and text
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: market-briefs
+          path: |
+            output/*.png
+            output/*.txt
+          retention-days: 30
+          if-no-files-found: ignore
       - name: Save complete archive, including partial-run data
         if: ${{ always() && steps.restore.outcome == 'success' }}
         uses: actions/upload-artifact@v7

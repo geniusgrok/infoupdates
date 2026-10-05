@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-WIDTH, HEIGHT = 1080, 1620
+WIDTH, HEIGHT = 1620, 1080
 BG = (8, 10, 13)
 CARD = (18, 22, 27)
 LINE = (46, 54, 64)

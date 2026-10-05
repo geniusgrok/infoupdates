@@ -6,7 +6,7 @@ from pathlib import Path
 from common.editorial import build_focus
 from common.format import fmt_pct, fmt_px, weekday_cn
 from common.render import (
-    AMBER, BG, GREEN, HEIGHT, MUTED, RED, TEXT, WIDTH, Canvas, change_color, font, text_width,
+    AMBER, GREEN, MUTED, RED, TEXT, WIDTH, Canvas, change_color,
 )
 
 from .calendar import previous_trading_day
@@ -101,109 +101,101 @@ def _macro_symbols(brief: Brief) -> list[str]:
 def _header(canvas: Canvas, brief: Brief) -> None:
     day = brief.edition_date
     now = new_york_time(brief.generated_at)
-    canvas.text(28, 24, "INFOUPDATES", 28, AMBER, "bold")
-    canvas.text(1052, 27, now.strftime("生成%m.%d %H:%M %Z"), 24, MUTED, align="right")
-    canvas.text(28, 75, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · {brief.title}",
-                51, TEXT, "bold", max_width=1024, min_size=44)
-    canvas.text(28, 143, brief.headline, 44, AMBER, "bold", max_width=780, min_size=34)
-    canvas.text(1052, 155, f"情绪{brief.sentiment}", 29, MUTED, align="right", max_width=210, min_size=23)
-    canvas.card(28, 199, 1024, 54, radius=12)
-    canvas.text(50, 213, brief.market_summary, 29, TEXT, "medium", max_width=980, min_size=22)
+    canvas.text(32, 24, "INFOUPDATES", 28, AMBER, "bold")
+    clock_label = "历史参考" if any(note.startswith("历史") for note in brief.notes) else "生成"
+    canvas.text(1588, 27, clock_label + now.strftime("%m.%d %H:%M %Z"), 22, MUTED, align="right")
+    canvas.text(32, 68, f"{day:%Y.%m.%d} {weekday_cn(day).replace('周', '星期')} · {brief.title}",
+                34, TEXT, "bold", max_width=1556)
+    canvas.text(32, 120, brief.headline, 40, AMBER, "bold", max_width=1300, min_size=32)
+    canvas.text(1588, 133, f"情绪{brief.sentiment}", 24, MUTED, align="right", max_width=230, min_size=22)
+    canvas.text(32, 182, brief.market_summary, 26, TEXT, "medium", max_width=1556, min_size=22)
+    canvas.line(32, 230, 1588, color=AMBER, width=2)
 
 
 def _primary(canvas: Canvas, brief: Brief) -> None:
     names = FUTURE_NAMES if brief.kind == "premarket" else INDEX_NAMES
     quotes = _available(brief.futures if brief.kind == "premarket" else brief.indices)
-    col = (1024 - 12 * (len(names) - 1)) / len(names)
+    col = (1556 - 16 * (len(names) - 1)) / len(names)
     for i, (symbol, name) in enumerate(names.items()):
         quote = quotes.get(symbol)
-        x = 28 + i * (col + 12)
-        canvas.card(x, 270, col, 148)
-        canvas.text(x + col / 2, 285, name, 30, MUTED, "medium", "center", max_width=col - 24)
-        canvas.text(x + col / 2, 320, _row_stamp(quote, brief), 18, MUTED,
-                    align="center", max_width=col - 16, min_size=17)
-        canvas.text(x + col / 2, 341, fmt_pct(quote.pct if quote else None), 42,
-                    change_color(quote.pct if quote else None), "bold", "center", max_width=col - 24, min_size=30)
-        canvas.text(x + col / 2, 385, _price(quote), 25, TEXT, align="center", max_width=col - 24, min_size=22)
+        x = 32 + i * (col + 16)
+        canvas.card(x, 248, col, 128)
+        canvas.text(x + 20, 266, name, 26, MUTED, "medium", max_width=col - 40)
+        canvas.pair(x + 20, 309, col - 40, _price(quote), fmt_pct(quote.pct if quote else None),
+                    34, value_size=30, color=change_color(quote.pct if quote else None), weight="bold", gap=14)
+        canvas.text(x + 20, 353, _row_stamp(quote, brief), 18, MUTED, max_width=col - 40)
 
-    canvas.card(28, 432, 1024, 78)
+    canvas.card(32, 392, 1556, 56)
     references = _available(brief.references)
     for i, symbol in enumerate(_macro_symbols(brief)):
-        x, quote = 50 + i * 512, references.get(symbol)
+        x, quote = 54 + i * 786, references.get(symbol)
         label = "WTI原油" if symbol == "CL=F" else MACRO_NAMES[symbol]
-        canvas.pair(x, 445, 468, label, _price(quote), 26,
+        canvas.pair(x, 399, 726, label, _price(quote), 24,
                     color=TEXT, label_color=MUTED)
-        canvas.text(x + 468, 479, _stamp(quote, brief, compact=True), 19, MUTED,
-                    align="right", max_width=468)
+        canvas.text(x + 726, 430, _stamp(quote, brief, compact=True), 16, MUTED,
+                    align="right", max_width=726)
         if i:
-            canvas.line(540, 447, 540, 493)
+            canvas.line(810, 404, 810, 438)
 
 
 def _stocks(canvas: Canvas, brief: Brief) -> None:
     quotes = _current(brief.stocks, brief)
     extended = _afterhours(brief)
     selected = _selected_stocks(brief)
-    canvas.card(28, 528, 1024, 306)
-    canvas.heading(50, 548, "重点个股")
+    canvas.card(32, 464, 770, 296)
+    canvas.text(54, 482, "重点个股", 26, AMBER, "bold")
     label = brief.stocks_label or "行情待确认"
     if brief.kind == "premarket":
         label += f" · {sum(symbol in quotes for symbol in MEGA_NAMES)} / {len(MEGA_NAMES)}家可用"
-    canvas.text(1030, 558, label, 23, MUTED, align="right", max_width=580, min_size=20)
+    canvas.text(780, 491, label, 18, MUTED, align="right", max_width=480, min_size=17)
     if not selected:
-        canvas.text(50, 620, "最新个股报价待确认", 31, MUTED)
-        canvas.text(50, 670, "等待有效行情后再筛选重点公司", 25, MUTED)
+        canvas.text(54, 573, "最新个股报价待确认", 28, MUTED)
+        canvas.text(54, 618, "等待有效行情后再筛选重点公司", 23, MUTED)
         return
     for i, quote in enumerate(selected):
-        y = 607 + i * 73
-        canvas.pair(50, y, 980, f"{quote.symbol} {quote.name}", fmt_pct(quote.pct), 32,
-                    value_size=35, color=change_color(quote.pct), weight="medium")
+        y = 524 + i * 76
+        canvas.pair(54, y, 726, f"{quote.symbol} {quote.name}", fmt_pct(quote.pct), 26,
+                    value_size=28, color=change_color(quote.pct), weight="medium")
         after = extended.get(quote.symbol)
         if after:
-            canvas.pair(50, y + 41, 980, f"{_price(quote)} · {_stamp(quote, brief)}",
-                        f"盘后{_price(after)} {fmt_pct(after.pct)} · {_stamp(after, brief)}", 20,
-                        color=MUTED, label_color=MUTED, gap=18)
+            canvas.text(54, y + 30, f"{_price(quote)} · {_stamp(quote, brief)}", 18, MUTED, max_width=726)
+            canvas.text(54, y + 51, f"盘后{_price(after)} {fmt_pct(after.pct)} · {_stamp(after, brief)}",
+                        18, MUTED, max_width=726)
         else:
-            canvas.pair(50, y + 41, 980, _price(quote), _stamp(quote, brief), 23,
-                        color=MUTED, label_color=TEXT, gap=18)
-        if i < len(selected) - 1:
-            canvas.line(50, y + 69, 1030)
+            canvas.text(54, y + 33, f"{_price(quote)} · {_stamp(quote, brief)}", 18, MUTED, max_width=726)
 
 
 def _sectors(canvas: Canvas, brief: Brief) -> None:
     strongest, weakest = sector_leaders(brief)
-    canvas.card(28, 852, 1024, 258)
-    canvas.heading(50, 871, "板块ETF强弱")
-    canvas.text(1030, 881, "相对表现 · 各两项", 23, MUTED, align="right", max_width=380)
+    canvas.card(818, 464, 770, 296)
+    canvas.text(840, 482, "板块ETF强弱", 26, AMBER, "bold")
+    canvas.text(1566, 491, "相对表现 · 各两项", 18, MUTED, align="right", max_width=380)
     if brief.kind == "premarket":
         base = f"{brief.reference_date:%m.%d}基准" if brief.reference_date else "基准待确认"
-        canvas.text(50, 917, f"最新板块ETF · 相对{base} · 各项实际时点", 22, MUTED, max_width=980, min_size=19)
+        canvas.text(840, 526, f"最新板块ETF · 相对{base} · 各项实际时点", 20, MUTED, max_width=726)
     else:
-        canvas.text(50, 917, _activity(brief), 22, MUTED, max_width=980, min_size=19)
-    canvas.line(540, 952, 540, 1091)
-    for x, label, rows, color in ((50, "相对较强", strongest, RED), (574, "相对较弱", weakest, GREEN)):
-        canvas.text(x, 949, label, 24, color, "medium")
+        canvas.text(840, 526, _activity(brief), 20, MUTED, max_width=726, min_size=18)
+    canvas.line(1203, 559, 1203, 741)
+    for x, label, rows, color in ((840, "相对较强", strongest, RED), (1226, "相对较弱", weakest, GREEN)):
+        canvas.text(x, 558, label, 22, color, "medium")
         for i in range(2):
             quote = rows[i] if i < len(rows) else None
-            y = 986 + i * 56
-            canvas.pair(x, y, 454, f"{quote.name} {quote.symbol}" if quote else "待确认",
-                        fmt_pct(quote.pct if quote else None), 28,
+            y = 594 + i * 84
+            canvas.pair(x, y, 340, f"{quote.name} {quote.symbol}" if quote else "待确认",
+                        fmt_pct(quote.pct if quote else None), 24,
                         color=change_color(quote.pct if quote else None), weight="regular")
-            canvas.text(x + 454, y + 33, _row_stamp(quote, brief), 18, MUTED, align="right", max_width=454)
+            canvas.paragraph(x, y + 31, _row_stamp(quote, brief), 340, 18, 2, MUTED, pitch=21)
 
 
 def _focus(canvas: Canvas, brief: Brief) -> None:
     items = focus_items(brief)
-    canvas.card(28, 1128, 1024, 428)
-    canvas.heading(50, 1150, "最重要的两件事")
     for i, item in enumerate(items[:2]):
-        y = 1210 + i * 173
-        canvas.text(50, y + 4, item.label, 23, AMBER, "medium", max_width=130)
-        canvas.paragraph(204, y, item.title, 826, 32, 2, TEXT, "medium", pitch=38)
-        if text_width(item.title, font(32, "medium")) <= 826:
-            canvas.text(204, y + 44, item.context, 26, MUTED, max_width=826)
-        canvas.text(1030, y + 114, item.stamp, 20, MUTED, align="right", max_width=826)
-        if i == 0 and len(items) > 1:
-            canvas.line(50, y + 153, 1030)
+        x = 32 + i * 786
+        canvas.card(x, 784, 770, 244)
+        canvas.text(x + 22, 804, item.label, 24, AMBER, "medium", max_width=726)
+        canvas.paragraph(x + 22, 843, item.title, 726, 29, 2, TEXT, "medium", pitch=38)
+        canvas.paragraph(x + 22, 929, item.context, 726, 24, 2, MUTED, pitch=28)
+        canvas.text(x + 748, 1004, item.stamp, 18, MUTED, align="right", max_width=726)
 
 
 def render_png(brief: Brief, path: Path) -> Path:
@@ -215,10 +207,13 @@ def render_png(brief: Brief, path: Path) -> Path:
     _sectors(canvas, brief)
     _focus(canvas, brief)
     status = "数据限制见文案" if brief.notes else "公开行情可能延迟"
+    if any(note.startswith("历史") for note in brief.notes):
+        status = "历史行情回放，缺项与采集时间见文案"
     quotes = brief.indices + brief.futures + brief.stocks + brief.sectors + brief.references + brief.extended_stocks
     providers = sorted({quote.source.split("（", 1)[0] for quote in quotes} | {item.source for item in brief.news})
     source = " / ".join(providers) if providers else "公开行情暂缺"
-    canvas.text(28, 1585, f"{source} · {status}", 18, MUTED, max_width=650)
-    canvas.text(1052, 1585, "美东时间 · 红涨绿跌 · 不构成投资建议", 18, MUTED, align="right", max_width=410)
+    canvas.text(32, 1048, f"{source} · {status}", 18, MUTED, max_width=900)
+    canvas.text(1588, 1048, "美东时间 · 红涨绿跌 · 不构成投资建议", 18, MUTED, align="right", max_width=610)
+    path = Path(path)
     canvas.save(path)
-    return Path(path)
+    return path

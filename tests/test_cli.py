@@ -3,12 +3,12 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from ashare import __main__ as ashare
-from ashare.models import CST, MarketData as AData, Quote as AQuote
+from ashare.models import Breadth, CapitalMix, CST, MarketData as AData, Quote as AQuote, SectorMove
 from common.archive import Archive
 from common.editorial import select_focus_news
 from common.news import NewsItem
@@ -179,3 +179,210 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(archive.reports()), 2)
             self.assertEqual(loader.call_count, 2)
             self.assertEqual(render.call_count, 2)
+
+    def test_dated_report_reuse_force_and_missing_image_keep_original_data(self):
+        day = date(2026, 9, 30)
+        a, u = self.valid_data(datetime(2026, 9, 30, 18, tzinfo=NY))
+        morning = AData([AQuote('sh000001', '上证指数', 2990, trade_day='2026-09-29', session='15:00:00')],
+                        overseas=[AQuote('gb_dji', '道琼斯', 39900, .4, session='09-29 收盘')])
+        pre_clock = datetime(2026, 9, 30, 8, tzinfo=NY)
+        pre = UData(premarket={'AAPL': UQuote('AAPL', '苹果', 103, 3, 100, asof=pre_clock,
+                                             session='premarket', previous_date=date(2026, 9, 29))})
+        cases = ((ashare, 'close', a, datetime(2026, 9, 30, 15, 30, tzinfo=CST), 'indices'),
+                 (ashare, 'morning', morning, datetime(2026, 9, 30, 8, tzinfo=CST), 'overseas'),
+                 (usstock, 'postmarket', u, datetime(2026, 9, 30, 18, tzinfo=NY), 'indices'),
+                 (usstock, 'premarket', pre, pre_clock, 'stocks'))
+        for cli, kind, data, original_clock, bag in cases:
+            with self.subTest(market=cli.__package__, kind=kind), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                archive = Archive(Path(folder) / 'archive')
+                brief = cli.build_brief(kind, data, now=original_clock)
+                capture_id = archive.capture(cli.__package__, data, original_clock)
+                archive.publish(cli.__package__, brief, capture_id, self.render, cli.social_copy(brief),
+                                Path(folder) / 'seed')
+                original = archive.reports()[0]['data']
+                self.assertEqual(original['edition_date'], day.isoformat())
+                args = [kind, '--date', day.isoformat(), '--archive', str(archive.root),
+                        '--output', str(Path(folder) / 'output')]
+                log = stack.enter_context(redirect_stdout(io.StringIO()))
+                stack.enter_context(redirect_stderr(io.StringIO()))
+                clock = stack.enter_context(patch.object(cli, 'datetime', wraps=datetime))
+                clock.now.return_value = datetime(2026, 10, 5, 18, tzinfo=original_clock.tzinfo)
+                today = (AData([AQuote('sh000001', '上证指数', 9999, trade_day='2026-10-05')])
+                         if cli is ashare else UData(completed={
+                             '^GSPC': UQuote('^GSPC', '标普500', 9999, asof=clock.now.return_value)}))
+                loader = stack.enter_context(patch.object(cli, 'load_market', return_value=today))
+                events = stack.enter_context(patch.object(cli, 'load_next_event'))
+                releases = stack.enter_context(patch.object(cli, 'collect_releases'))
+                render = stack.enter_context(patch.object(cli, 'render_png', side_effect=self.render))
+                cli.main(args)
+                self.assertIn('已有运行结果', log.getvalue())
+                render.assert_not_called()
+                cli.main([*args, '--force'])
+                render.assert_called_once()
+                current = archive.reports()[0]
+                self.assertEqual(current['data'][bag], original[bag])
+                self.assertEqual(current['data']['generated_at'], original['generated_at'])
+                self.assertEqual(current['data']['edition_date'], day.isoformat())
+                self.assertEqual(current['capture_id'], capture_id)
+                (archive.root / current['path'] / 'image.png').unlink()
+                cli.main(args)  # SQLite 中的完整数据足以补绘，不必重新采集今天的报价。
+                self.assertEqual(render.call_count, 2)
+                self.assertEqual(archive.reports()[0]['data'][bag], original[bag])
+                self.assertEqual(len(archive.snapshots()), 1)
+                loader.assert_not_called()
+                events.assert_not_called()
+                releases.assert_not_called()
+
+    def test_dated_failed_capture_recovers_at_original_clock(self):
+        moment = datetime(2026, 9, 30, 15, 30, tzinfo=CST)
+        data = AData([AQuote('sh000001', '上证指数', 3000, .5,
+                            trade_day='2026-09-30', session='15:00:00')])
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            archive = Archive(Path(folder) / 'archive')
+            capture_id = archive.capture('ashare', data, moment)
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            clock = stack.enter_context(patch.object(ashare, 'datetime', wraps=datetime))
+            clock.now.return_value = datetime(2026, 10, 5, 12, tzinfo=CST)
+            loader = stack.enter_context(patch.object(ashare, 'load_market'))
+            events = stack.enter_context(patch.object(ashare, 'load_next_event'))
+            releases = stack.enter_context(patch.object(ashare, 'collect_releases'))
+            stack.enter_context(patch.object(ashare, 'render_png', side_effect=self.render))
+            ashare.main(['close', '--date', '2026-09-30', '--archive', str(archive.root),
+                         '--output', str(Path(folder) / 'output')])
+            report = archive.reports()[0]
+            self.assertEqual(report['capture_id'], capture_id)
+            self.assertEqual(datetime.fromisoformat(report['data']['generated_at']), moment)
+            self.assertEqual(report['data']['hero']['last'], 3000)
+            self.assertEqual(report['data']['edition_date'], '2026-09-30')
+            self.assertEqual(len(archive.snapshots()), 1)
+            loader.assert_not_called()
+            events.assert_not_called()
+            releases.assert_not_called()
+
+    def test_dated_late_capture_keeps_close_price_without_future_news(self):
+        captured_at = datetime(2026, 10, 2, 12, tzinfo=CST)
+        later_news = '美联储公布十月最新政策展望'
+        data = AData([AQuote('sh000001', '上证指数', 3000, .5,
+                            trade_day='2026-09-30', session='15:00:00')],
+                     news=[NewsItem(datetime(2026, 9, 30, 12, tzinfo=CST), '央行公布九月金融市场数据', '见闻'),
+                           NewsItem(datetime(2026, 10, 1, 12, tzinfo=CST), later_news, '见闻')],
+                     sectors_up=[SectorMove('科技', 2)], breadth=Breadth(3000, 2000, 100, 50, 10),
+                     capital=[CapitalMix('沪市', 100, 10, 90, -50, -50),
+                              CapitalMix('深市', 200, 50, 150, -100, -100, trade_day='2026-09-30')])
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            archive = Archive(Path(folder) / 'archive')
+            capture_id = archive.capture('ashare', data, captured_at)
+            brief = ashare.build_brief('close', data, now=captured_at)
+            self.assertIn(later_news, [item.title for item in brief.news])
+            archive.publish('ashare', brief, capture_id, self.render, ashare.social_copy(brief),
+                            Path(folder) / 'seed')
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            clock = stack.enter_context(patch.object(ashare, 'datetime', wraps=datetime))
+            clock.now.return_value = datetime(2026, 10, 5, 12, tzinfo=CST)
+            loader = stack.enter_context(patch.object(ashare, 'load_market'))
+            history = stack.enter_context(patch('ashare.history.load_history'))
+            events = stack.enter_context(patch.object(ashare, 'load_next_event'))
+            releases = stack.enter_context(patch.object(ashare, 'collect_releases'))
+            stack.enter_context(patch.object(ashare, 'render_png', side_effect=self.render))
+            ashare.main(['close', '--date', '2026-09-30', '--archive', str(archive.root),
+                         '--output', str(Path(folder) / 'output')])
+            report = archive.reports()[0]
+            self.assertEqual(report['capture_id'], capture_id)
+            self.assertEqual(report['data']['hero']['last'], 3000)
+            self.assertEqual(report['data']['edition_date'], '2026-09-30')
+            self.assertEqual(datetime.fromisoformat(report['data']['generated_at']).astimezone(CST).date(),
+                             date(2026, 9, 30))
+            self.assertNotIn(later_news, [item['title'] for item in report['data']['news']])
+            self.assertTrue(all(datetime.fromisoformat(item['published']).astimezone(CST).date() <= date(2026, 9, 30)
+                                for item in report['data']['news']))
+            self.assertTrue(any('历史收盘' in note for note in report['data']['notes']))
+            self.assertEqual(report['data']['sectors_up'], [])
+            self.assertIsNone(report['data']['breadth'])
+            self.assertEqual([item['market'] for item in report['data']['capital']], ['深市'])
+            loader.assert_not_called()
+            history.assert_not_called()
+            events.assert_not_called()
+            releases.assert_not_called()
+
+    def test_dated_history_fallback_uses_exact_day_and_actual_capture_time(self):
+        now = datetime(2026, 10, 5, 12, tzinfo=CST)
+        target = date(2026, 9, 29)
+        reference = datetime(2026, 9, 29, 15, 30, tzinfo=CST)
+        data = AData([AQuote('sh000001', '上证指数', 2900, .5,
+                            trade_day=target.isoformat(), session='15:00:00')])
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            archive = Archive(Path(folder) / 'archive')
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            clock = stack.enter_context(patch.object(ashare, 'datetime', wraps=datetime))
+            clock.now.return_value = now
+            history = stack.enter_context(patch('ashare.history.load_history', return_value=(data, reference)))
+            loader = stack.enter_context(patch.object(ashare, 'load_market'))
+            events = stack.enter_context(patch.object(ashare, 'load_next_event'))
+            releases = stack.enter_context(patch.object(ashare, 'collect_releases'))
+            render = stack.enter_context(patch.object(ashare, 'render_png', side_effect=OSError('绘图失败')))
+            args = ['close', '--date', target.isoformat(), '--archive', str(archive.root),
+                    '--output', str(Path(folder) / 'output')]
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                ashare.main(args)
+            self.assertEqual(failure.exception.code, 2)
+            snapshot = archive.snapshots()[0]
+            self.assertEqual(snapshot['data']['origin'], 'history')
+            self.assertEqual(datetime.fromisoformat(snapshot['data']['reference_at']), reference)
+            self.assertEqual(archive.reports(), [])
+            render.side_effect = self.render
+            history.side_effect = AssertionError('恢复历史采集不应再次请求历史接口')
+            ashare.main(args)
+            history.assert_called_once_with('close', target, now)
+            report = archive.reports()[0]['data']
+            self.assertEqual(report['edition_date'], target.isoformat())
+            self.assertEqual(report['trade_date'], target.isoformat())
+            self.assertEqual(report['hero']['last'], 2900)
+            self.assertEqual(datetime.fromisoformat(report['generated_at']), reference)
+            self.assertEqual(datetime.fromisoformat(archive.snapshots()[0]['first_seen']), now)
+            loader.assert_not_called()
+            events.assert_not_called()
+            releases.assert_not_called()
+
+    def test_invalid_holiday_and_unavailable_future_dates_fail_before_fetch(self):
+        cases = ((ashare, 'close', '2026/09/30'), (ashare, 'morning', '2026-02-30'),
+                 (ashare, 'close', '2026-10-01'), (usstock, 'postmarket', '2026-10-03'),
+                 (ashare, 'close', '2026-10-08'), (ashare, 'morning', '2026-10-09'),
+                 (usstock, 'postmarket', '2026-10-06'), (usstock, 'premarket', '2026-10-07'))
+        for cli, kind, target in cases:
+            with self.subTest(market=cli.__package__, kind=kind, date=target), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                stack.enter_context(redirect_stdout(io.StringIO()))
+                stack.enter_context(redirect_stderr(io.StringIO()))
+                clock = stack.enter_context(patch.object(cli, 'datetime', wraps=datetime))
+                clock.now.return_value = datetime(2026, 10, 5, 18, tzinfo=CST if cli is ashare else NY)
+                loader = stack.enter_context(patch.object(cli, 'load_market'))
+                events = stack.enter_context(patch.object(cli, 'load_next_event'))
+                releases = stack.enter_context(patch.object(cli, 'collect_releases'))
+                with self.assertRaises(SystemExit) as failure:
+                    cli.main([kind, '--date', target, '--archive', str(Path(folder) / 'archive'),
+                              '--output', str(Path(folder) / 'output')])
+                self.assertEqual(failure.exception.code, 2)
+                loader.assert_not_called()
+                events.assert_not_called()
+                releases.assert_not_called()
+
+    def test_past_premarket_without_saved_snapshot_fails_without_live_fetch(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            errors = stack.enter_context(redirect_stderr(io.StringIO()))
+            clock = stack.enter_context(patch.object(usstock, 'datetime', wraps=datetime))
+            clock.now.return_value = datetime(2026, 10, 5, 18, tzinfo=NY)
+            loader = stack.enter_context(patch.object(usstock, 'load_market'))
+            events = stack.enter_context(patch.object(usstock, 'load_next_event'))
+            releases = stack.enter_context(patch.object(usstock, 'collect_releases'))
+            render = stack.enter_context(patch.object(usstock, 'render_png', side_effect=self.render))
+            with self.assertRaises(SystemExit) as failure:
+                usstock.main(['premarket', '--date', '2026-09-30', '--archive', str(Path(folder) / 'archive'),
+                             '--output', str(Path(folder) / 'output')])
+            self.assertEqual(failure.exception.code, 2)
+            self.assertIn('盘前', errors.getvalue())
+            self.assertIn('2026-09-30', errors.getvalue())
+            self.assertEqual(Archive(Path(folder) / 'archive').reports(), [])
+            loader.assert_not_called()
+            events.assert_not_called()
+            releases.assert_not_called()
+            render.assert_not_called()

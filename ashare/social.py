@@ -37,6 +37,7 @@ def social_copy(brief: Brief) -> str:
     limits = _limits(brief)
     if limits:
         lines.append(limits)
+    lines.extend(note for note in brief.notes if note.startswith(("历史", "实际采集")))
     lines.append("公开行情可能延迟，不构成投资建议。")
     return "\n".join(lines) + "\n"
 
@@ -90,7 +91,8 @@ def _reference(brief: Brief) -> str:
         reference = f"下次交易{brief.edition_date.month}月{brief.edition_date.day}日；"
     else:
         reference = ""
-    return reference + f"生成{china_time(brief.generated_at):%m.%d %H:%M} CST。"
+    clock_label = "历史参考" if any(note.startswith("历史") for note in brief.notes) else "生成"
+    return reference + clock_label + f"{china_time(brief.generated_at):%m.%d %H:%M} CST。"
 
 
 def _limits(brief: Brief) -> str:
