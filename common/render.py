@@ -84,12 +84,14 @@ class Canvas:
 
     def paragraph(self, x: float, y: float, value: str, width: float,
                   size: int, lines: int, color: tuple[int, int, int] = TEXT,
-                  weight: str = "regular", pitch: int | None = None) -> None:
+                  weight: str = "regular", pitch: int | None = None) -> float:
+        """返回实际文字底部，后续说明可紧接正文排列。"""
         value = re.sub(r"\s+", " ", value).strip()
         face = font(size, weight)
         tokens = re.findall(r"[+-]?\d+(?:[.,]\d+)*(?:%|万人|亿元|亿港元|亿|个月)?|[A-Za-z][A-Za-z0-9._/-]*|.", value)
         tokens = [part for token in tokens for part in (list(token) if text_width(token, face) > width else [token])]
         start = 0
+        bottom = y
         for row in range(lines):
             if start >= len(tokens):
                 break
@@ -100,8 +102,21 @@ class Canvas:
                 line = ellipsize("".join(tokens[start:]), face, width)
             else:
                 line = "".join(tokens[start:end])
-            self.text(x, y + row * (pitch or size + 5), line, size, color, weight)
+            bottom = self.text(x, y + row * (pitch or size + 5), line, size, color, weight)[3]
             start = end
+        return bottom
+
+    def change_bar(self, x: float, y: float, width: float, height: float,
+                   value: float | None, scale: float) -> None:
+        """以零为中轴比较同组数值；缺失值不绘制数据条。"""
+        center = x + width / 2
+        self.draw.rectangle((x, y, x + width, y + height), fill=HAIR)
+        if value is not None and isfinite(value) and isfinite(scale) and scale > 0:
+            end = center + width / 2 * max(-1, min(1, value / scale))
+            if end != center:
+                self.draw.rounded_rectangle((min(center, end), y, max(center, end), y + height),
+                                            radius=min(3, abs(end - center) / 2), fill=change_color(value))
+        self.line(center, y - 3, center, y + height + 3, color=MUTED)
 
     def card(self, x: float, y: float, width: float, height: float, fill=CARD, radius: int = 19) -> None:
         self.draw.rounded_rectangle((x, y, x + width, y + height), radius=radius, fill=fill, outline=LINE, width=1)
