@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from math import isfinite
 
-from .calendar import HOLIDAY_RANGES, edition_date, is_trading_day, previous_trading_day
+from .calendar import HOLIDAY_RANGES, edition_date, is_trading_day, latest_quote_date, previous_trading_day
 from .models import CST, Brief, MarketData, Narrative, Quote, china_time
 from .narrative import build_narrative
 from .rank import select_news
@@ -49,15 +49,18 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
             notes.append(f"{quote.name}日期无效，行情暂缺")
             continue
         indices.append(quote)
-    trade_date = now.date()
+    try:
+        trade_date = latest_quote_date(now)
+    except ValueError:
+        trade_date = now.date()
     if hero.last > 0:
         try:
-            trade_date = date.fromisoformat(hero.trade_day)
-            if trade_date > now.date():
+            parsed = date.fromisoformat(hero.trade_day)
+            if parsed > now.date():
                 raise ValueError("future quote")
+            trade_date = parsed
         except ValueError:
             hero = Quote("sh000001", "上证指数", 0.0)
-            trade_date = now.date()
             notes.append("上证指数日期无效，市场结论待确认")
     indices = [quote for quote in indices if (not quote.trade_day or quote.trade_day == trade_date.isoformat())
                and not (hero.last <= 0 and quote.name == "上证指数")]

@@ -440,22 +440,177 @@ def parse_tencent_fx(symbol: str, body: str, name: str) -> Quote | None:
     return Quote(symbol=symbol, name=name, last=last, pct=pct, session=session, trade_day=trade_day)
 
 
-def parse_tencent_capital(market: str, payload: dict) -> CapitalMix | None:
+def _tencent_history_mains(root: dict) -> dict[str, float]:
+    hist = root.get("historyFundFlow")
+    rows = hist.get("oneDayKlineList") if isinstance(hist, dict) else []
+    if not isinstance(rows, list):
+        return {}
+    mains: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        day = _date_stamp(row.get("date"))
+        main = _optional_float(row.get("mainNetIn"))
+        if day and main is not None:
+            mains[day] = main
+    return mains
+
+
+def parse_tencent_capital(market: str, payload: dict, trade_day: str = "") -> CapitalMix | None:
+    """Prefer the full same-day mix. Older sessions only publish the main net."""
     root = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    mains = _tencent_history_mains(root)
     flow = root.get("todayFundFlow")
-    if not isinstance(flow, dict):
+    values = []
+    if isinstance(flow, dict):
+        values = [_optional_float(flow.get(key)) for key in ("mainNetIn", "superFlow", "bigFlow", "normalFlow", "smallFlow")]
+    full = len(values) == 5 and all(value is not None for value in values)
+    latest = max(mains) if mains else ""
+    target = trade_day or latest
+    if full and (not target or target == latest):
+        return CapitalMix(market, *values, trade_day=latest)
+    if target and target in mains:
+        return CapitalMix(market, mains[target], trade_day=target)
+    if full:
+        return CapitalMix(market, *values, trade_day=latest)
+    return None
+
+
+def _tencent_day_rows(payload: object, symbol: str) -> list[list]:
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    series = data.get(symbol) if isinstance(data, dict) else None
+    rows = series.get("day") if isinstance(series, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, list) and row]
+
+
+def parse_tencent_kline(payload: object, symbol: str, name: str) -> list[Quote]:
+    """Tencent newfqkline column 2 is the close; column 8 is amount in 万元."""
+    quotes: list[Quote] = []
+    for row in _tencent_day_rows(payload, symbol):
+        day = _date_stamp(row[0])
+        close = _optional_float(row[2]) if len(row) > 2 else None
+        if not day or close is None or close <= 0:
+            continue
+        amount = _optional_float(row[8]) if len(row) > 8 else None
+        if amount is not None and amount <= 0:
+            amount = None
+        quotes.append(Quote(
+            symbol=symbol,
+            name=name,
+            last=close,
+            trade_day=day,
+            session="15:00:00",
+            source="腾讯日线",
+            amount=amount * 10_000 if amount is not None else None,
+        ))
+    return quotes
+
+
+def parse_tencent_turnover(payload: object, trade_date: date) -> TurnoverComparison | None:
+    amounts: dict[date, float | None] = {}
+    for row in _tencent_day_rows(payload, "sh000001"):
+        stamp = _date_stamp(row[0])
+        if not stamp:
+            continue
+        day = date.fromisoformat(stamp)
+        amount = _optional_float(row[8]) if len(row) > 8 else None
+        if amount is not None and amount <= 0:
+            amount = None
+        if amount is not None:
+            amount *= 10_000
+        if day in amounts and amounts[day] != amount:
+            return None
+        amounts[day] = amount
+    return _turnover_comparison(amounts, trade_date, "腾讯")
+
+
+def parse_tencent_industry_flows(payload: object, limit: int = 5) -> tuple[list[SectorFlow], list[SectorFlow]]:
+    """Tencent zljlr is 万元. Stored nets match Eastmoney's yuan."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows = data.get("rank_list") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return [], []
+    flows: list[SectorFlow] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = _clean_label(str(row.get("name") or ""))
+        net = _optional_float(row.get("zljlr"))
+        if not name or net is None or net == 0:
+            continue
+        flows.append(SectorFlow(code=str(row.get("code") or ""), name=name, net=net * 10_000))
+    flows.sort(key=lambda item: item.net, reverse=True)
+    inflow = [item for item in flows if item.net > 0][:limit]
+    outflow = [item for item in flows if item.net < 0]
+    outflow.sort(key=lambda item: item.net)
+    return inflow, outflow[:limit]
+
+
+def parse_kamt(payload: object, trade_day: str = "") -> CrossBorder | None:
+    """Eastmoney realtime connect amounts are 万元. A zero north print is unpublished."""
+    if not isinstance(payload, dict):
         return None
-    values = [_optional_float(flow.get(key)) for key in ("mainNetIn", "superFlow", "bigFlow", "normalFlow", "smallFlow")]
-    if any(value is None for value in values):
+    data = payload.get("data")
+    if not isinstance(data, dict):
         return None
-    trend = root.get("todayFundTrend")
-    minutes = trend.get("minList") if isinstance(trend, dict) else []
-    if not isinstance(minutes, list):
-        minutes = []
-    stamps = [str(row.get("time") or "") for row in minutes if isinstance(row, dict)]
-    days = [_date_stamp(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}") for stamp in stamps if re.fullmatch(r"\d{12,14}", stamp)]
-    trade_day = max((day for day in days if day), default="")
-    return CapitalMix(market, *values, trade_day=trade_day)
+
+    def leg(name: str) -> dict:
+        row = data.get(name)
+        return row if isinstance(row, dict) else {}
+
+    hk2sh, hk2sz, sh2hk, sz2hk = leg("hk2sh"), leg("hk2sz"), leg("sh2hk"), leg("sz2hk")
+
+    def day_of(row: dict) -> str:
+        return _date_stamp(row.get("date2"))
+
+    days = {day for day in (day_of(row) for row in (hk2sh, hk2sz, sh2hk, sz2hk)) if day}
+    if trade_day and days and trade_day not in days:
+        return None
+    session = trade_day or next(iter(days), "")
+
+    def wan(row: dict, key: str) -> float | None:
+        if day_of(row) and session and day_of(row) != session:
+            return None
+        value = _optional_float(row.get(key))
+        if value is None:
+            return None
+        return value * 10_000
+
+    def deal(row: dict) -> float | None:
+        amount = wan(row, "buySellAmt")
+        if amount is None or amount <= 0:
+            return None
+        return amount
+
+    published = [amount for amount in (deal(hk2sh), deal(hk2sz)) if amount is not None]
+    north = sum(published) if published else None
+
+    def net(row: dict) -> float | None:
+        value = wan(row, "netBuyAmt")
+        if value is None:
+            return None
+        if row.get("status") == 3 and value == 0:
+            return None
+        return value
+
+    south_sh, south_sz = net(sh2hk), net(sz2hk)
+    if south_sh is None or south_sz is None:
+        south = None
+    else:
+        south = south_sh + south_sz
+    if north is None and south is None:
+        return None
+    return CrossBorder(
+        north_turnover=north,
+        south_net=south,
+        south_sh=south_sh,
+        south_sz=south_sz,
+        trade_day=session,
+    )
 
 
 def parse_sina_board_money(text: str, limit: int = 5) -> tuple[list[SectorMove], list[SectorMove], list[SectorFlow], list[SectorFlow]]:

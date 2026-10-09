@@ -60,10 +60,10 @@ class SectorFlow:
 class CapitalMix:
     market: str
     main: float
-    super_order: float
-    large: float
-    mid: float
-    small: float
+    super_order: float | None = None
+    large: float | None = None
+    mid: float | None = None
+    small: float | None = None
     trade_day: str = ""
 
 

@@ -56,6 +56,22 @@ def parse_daily(payload, symbol: str, name: str, observed_at: datetime) -> list[
     return _with_changes(quotes)
 
 
+def _covers(quotes: list[Quote], required_day: date | None) -> bool:
+    return bool(quotes) and (required_day is None or any(quote.trade_day == required_day.isoformat() for quote in quotes))
+
+
+def _kept(quotes: list[Quote], start: date, end: date, observed_at: datetime) -> list[Quote]:
+    kept = []
+    for quote in quotes:
+        try:
+            day = date.fromisoformat(quote.trade_day)
+        except ValueError:
+            continue
+        if start <= day <= end and is_trading_day(day) and datetime.combine(day, time(15), CST) <= observed_at:
+            kept.append(quote)
+    return kept
+
+
 def load_daily(symbol: str, name: str, start: date, end: date, observed_at: datetime,
                *, required_day: date | None = None) -> list[Quote]:
     """每个标的一次选择来源；价格与前收盘、成交额不跨源拼接。"""
@@ -63,18 +79,20 @@ def load_daily(symbol: str, name: str, start: date, end: date, observed_at: date
     try:
         url = "https://q.stock.sohu.com/hisHq?" + urlencode({"code": "zs_" + symbol[2:], "start": start.strftime("%Y%m%d"),
             "end": end.strftime("%Y%m%d"), "stat": 1, "order": "D", "period": "d"})
-        quotes = [quote for quote in parse_daily(json.loads(fetch_text(url, "https://q.stock.sohu.com/", encoding="gb18030",
-                                timeout=10, retries=0)), symbol, name, observed_at) if start <= date.fromisoformat(quote.trade_day) <= end]
-        if quotes and (required_day is None or any(quote.trade_day == required_day.isoformat() for quote in quotes)):
+        quotes = _kept(parse_daily(json.loads(fetch_text(url, "https://q.stock.sohu.com/", encoding="gb18030",
+                                timeout=12, retries=2)), symbol, name, observed_at), start, end, observed_at)
+        if _covers(quotes, required_day):
             return quotes
     except (OSError, ValueError, TypeError) as exc:
         errors.append(type(exc).__name__)
     try:
+        from .sources import push_json
+
         market = 1 if symbol.startswith("sh") else 0
-        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get?" + urlencode({
+        path = "/api/qt/stock/kline/get?" + urlencode({
             "secid": f"{market}.{symbol[2:]}", "klt": 101, "fqt": 0, "beg": start.strftime("%Y%m%d"), "end": end.strftime("%Y%m%d"),
             "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"})
-        payload = json.loads(fetch_text(url, "https://quote.eastmoney.com/", timeout=10, retries=0))
+        payload = push_json(path, "https://quote.eastmoney.com/")
         data = payload.get("data") or {}
         if data.get("code") != symbol[2:] or data.get("market") != market:
             raise ValueError("东财历史标的不匹配")
@@ -83,14 +101,25 @@ def load_daily(symbol: str, name: str, start: date, end: date, observed_at: date
             try:
                 row = line.split(",")
                 day, price, amount = date.fromisoformat(row[0]), finite_number(row[2], positive=True), finite_number(row[6])
-                if start <= day <= end and is_trading_day(day) and datetime.combine(day, time(15), CST) <= observed_at and price is not None:
-                    quotes.append(Quote(symbol, name, price, trade_day=day.isoformat(), session="15:00:00", source="东财日线",
-                                        amount=amount if amount is not None and amount >= 0 else None))
+                if price is None:
+                    continue
+                quotes.append(Quote(symbol, name, price, trade_day=day.isoformat(), session="15:00:00", source="东财日线",
+                                    amount=amount if amount is not None and amount >= 0 else None))
             except (ValueError, TypeError, IndexError, AttributeError):
                 continue
-        if quotes and (required_day is None or any(quote.trade_day == required_day.isoformat() for quote in quotes)):
+        quotes = _kept(quotes, start, end, observed_at)
+        if _covers(quotes, required_day):
             return _with_changes(quotes)
-    except (OSError, ValueError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError) as exc:
+        errors.append(type(exc).__name__)
+    try:
+        from .sources import tencent_kline
+
+        span = max((end - start).days + 15, 40)
+        quotes = _kept(tencent_kline(symbol, name, span), start, end, observed_at)
+        if _covers(quotes, required_day):
+            return _with_changes(quotes)
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
         errors.append(type(exc).__name__)
     raise ValueError(f"{name}历史来源不可用（{'、'.join(errors) or '目标日期无数据'}）")
 

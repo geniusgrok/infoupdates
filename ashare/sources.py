@@ -10,8 +10,9 @@ from common.news import NewsItem, em_items, wscn_items
 from .models import Breadth, CapitalMix, CrossBorder, Quote, SectorFlow, SectorMove, TurnoverComparison
 from .parse import (
     INDEX_NAMES, parse_cn_index, parse_cross_border, parse_fenbu, parse_fflow_line,
-    parse_fx, parse_hk_index, parse_industry_flows, parse_nikkei, parse_tencent_bundle,
-    parse_tencent_capital, parse_tencent_fx, parse_tencent_quote, parse_sina_board_money,
+    parse_fx, parse_hk_index, parse_industry_flows, parse_kamt, parse_nikkei, parse_tencent_bundle,
+    parse_tencent_capital, parse_tencent_fx, parse_tencent_industry_flows, parse_tencent_kline,
+    parse_tencent_quote, parse_tencent_turnover, parse_sina_board_money,
     parse_sina_bundle, parse_sina_industries, parse_sohu_turnover, parse_eastmoney_turnover, parse_us_index,
 )
 
@@ -36,7 +37,19 @@ NEWS_COLUMNS = ("101", "110", "118", "119", "125")
 TENCENT = "https://gu.qq.com"
 TENCENT_INDEXES = ",".join(INDEX_SYMBOLS)
 TENCENT_GLOBAL = "usDJI,usIXIC,usINX,hkHSI,hkHSTECH,whUSDCNY"
-EASTMONEY_HISTORY = "https://push2his.eastmoney.com"
+# push2his resets non-mainland connections often enough that one host is not a source.
+PUSH_HOSTS = (
+    "https://push2.eastmoney.com",
+    "https://33.push2.eastmoney.com",
+    "https://push2his.eastmoney.com",
+    "https://47.push2.eastmoney.com",
+)
+EX_HOSTS = (
+    "https://push2ex.eastmoney.com",
+    "https://33.push2ex.eastmoney.com",
+)
+QUOTE_TIMEOUT = 12
+QUOTE_RETRIES = 2
 
 
 def optional(label: str, fn):
@@ -48,19 +61,66 @@ def optional(label: str, fn):
 
 
 def _json(url: str, referer: str, **request) -> dict:
-    payload = json.loads(fetch_text(url, referer, **request))
+    request.setdefault("timeout", QUOTE_TIMEOUT)
+    request.setdefault("retries", QUOTE_RETRIES)
+    text = fetch_text(url, referer, **request)
+    if not text.strip():
+        raise RuntimeError("空响应")
+    payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError("行情响应不是 JSON 对象")
     return payload
 
 
+def _payload_unusable(payload: dict) -> bool:
+    data = payload.get("data")
+    if isinstance(data, dict) and "klines" in data and not data.get("klines"):
+        return True
+    if "data" in payload and data in (None, {}, []):
+        return True
+    result = payload.get("result")
+    if payload.get("success") is False and not (isinstance(result, dict) and result.get("data")):
+        return True
+    return False
+
+
+def _first_json(urls: tuple[str, ...] | list[str], referer: str, label: str) -> dict:
+    errors: list[str] = []
+    for url in urls:
+        empty = False
+        for _attempt in range(2):
+            try:
+                payload = _json(url, referer, retries=1)
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                errors.append(str(exc))
+                empty = False
+                break
+            if not _payload_unusable(payload):
+                return payload
+            empty = True
+        if empty:
+            errors.append("空响应")
+    detail = "；".join(errors[:4]) or "无响应"
+    raise RuntimeError(f"{label}失败：{detail}")
+
+
+def push_json(path: str, referer: str = EASTMONEY) -> dict:
+    if not path.startswith("/"):
+        path = "/" + path
+    return _first_json(tuple(host + path for host in PUSH_HOSTS), referer, "东财")
+
+
 def _sina(symbols: str) -> dict[str, str]:
     url = "https://hq.sinajs.cn/list=" + symbols
-    return parse_sina_bundle(fetch_text(url, SINA, encoding="gb18030"))
+    return parse_sina_bundle(fetch_text(url, SINA, encoding="gb18030", timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES))
 
 
 def _tencent(symbols: str) -> dict[str, str]:
-    text = fetch_text("https://qt.gtimg.cn/q=" + symbols, TENCENT, encoding="gbk", timeout=12, retries=0)
+    text = fetch_text(
+        "https://qt.gtimg.cn/q=" + symbols, TENCENT, encoding="gbk", timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES,
+    )
+    if not text.strip():
+        raise RuntimeError("腾讯行情为空")
     return parse_tencent_bundle(text)
 
 
@@ -139,7 +199,10 @@ def tencent_overseas() -> tuple[list[Quote], list[Quote]]:
 
 
 def sina_sectors() -> tuple[list[SectorMove], list[SectorMove]]:
-    text = fetch_text("https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php", SINA, encoding="gbk")
+    text = fetch_text(
+        "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php", SINA, encoding="gbk",
+        timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES,
+    )
     leaders, laggards = parse_sina_industries(text)
     if not leaders and not laggards:
         raise RuntimeError("新浪行业为空")
@@ -151,73 +214,108 @@ def sina_sector_money() -> tuple[list[SectorMove], list[SectorMove], list[Sector
         "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
         "MoneyFlow.ssl_bkzj_bk?page=1&num=80&sort=netamount&asc=0&fenlei=0"
     )
-    text = fetch_text(url, SINA, encoding="utf-8", timeout=12, retries=0)
+    text = fetch_text(url, SINA, encoding="utf-8", timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES)
     leaders, laggards, inflow, outflow = parse_sina_board_money(text)
     if not leaders and not inflow:
         raise RuntimeError("新浪行业资金为空")
     return leaders, laggards, inflow, outflow
 
 
-def eastmoney_capital(secid: str, market: str) -> CapitalMix:
-    url = (
-        f"{EASTMONEY_HISTORY}/api/qt/stock/fflow/daykline/get"
-        f"?lmt=1&klt=101&secid={secid}&fields1=f1,f2,f3,f7"
+def eastmoney_capital(secid: str, market: str, trade_day: str = "") -> CapitalMix:
+    path = (
+        "/api/qt/stock/fflow/daykline/get"
+        f"?lmt=12&klt=101&secid={secid}&fields1=f1,f2,f3,f7"
         "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"
     )
-    payload = _json(url, EASTMONEY, timeout=12, retries=1)
+    payload = push_json(path, EASTMONEY)
     data = payload.get("data")
     lines = data.get("klines") if isinstance(data, dict) else None
-    if not isinstance(lines, list) or not lines or not isinstance(lines[-1], str):
+    if not isinstance(lines, list):
         raise RuntimeError(f"{market}资金为空")
-    parsed = parse_fflow_line(market, lines[-1])
-    if parsed is None:
-        raise RuntimeError(f"{market}资金无法解析")
-    return parsed
+    chosen: CapitalMix | None = None
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        parsed = parse_fflow_line(market, line)
+        if parsed and (not trade_day or parsed.trade_day == trade_day):
+            chosen = parsed
+    if chosen is None:
+        raise RuntimeError(f"{market}资金为空")
+    return chosen
 
 
-def tencent_capital(code: str, market: str) -> CapitalMix:
+def tencent_capital(code: str, market: str, trade_day: str = "") -> CapitalMix:
     url = f"https://proxy.finance.qq.com/cgi/cgi-bin/fundflow/hsfundtab?code={code}"
-    payload = _json(url, TENCENT, timeout=12, retries=0)
-    parsed = parse_tencent_capital(market, payload)
-    if parsed is None:
+    payload = _json(url, TENCENT)
+    parsed = parse_tencent_capital(market, payload, trade_day)
+    if parsed is None or (trade_day and parsed.trade_day != trade_day):
         raise RuntimeError(f"{market}腾讯资金为空")
     return parsed
 
 
-def eastmoney_flows() -> tuple[list[SectorFlow], list[SectorFlow]]:
-    url = "https://data.eastmoney.com/dataapi/bkzj/getbkzj?key=f62&code=" + quote("m:90+s:4")
-    payload = _json(url, EASTMONEY)
+def _industry_from(payload: dict) -> tuple[list[SectorFlow], list[SectorFlow]]:
     inflow, outflow = parse_industry_flows(payload)
     if not inflow and not outflow:
         raise RuntimeError("东财行业资金为空")
     return inflow, outflow
 
 
+def eastmoney_flows() -> tuple[list[SectorFlow], list[SectorFlow]]:
+    url = "https://data.eastmoney.com/dataapi/bkzj/getbkzj?key=f62&code=" + quote("m:90+s:4")
+    try:
+        return _industry_from(_json(url, EASTMONEY))
+    except (OSError, ValueError, RuntimeError, TypeError):
+        path = (
+            "/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f62&fs="
+            + quote("m:90+s:4")
+            + "&fields=f12,f14,f62"
+        )
+        return _industry_from(push_json(path, EASTMONEY))
+
+
+def tencent_flows() -> tuple[list[SectorFlow], list[SectorFlow]]:
+    def rank(direction: str) -> dict:
+        url = (
+            "https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank"
+            f"?board_type=hy&sort_type=netMainIn&direct={direction}&offset=0&count=8"
+        )
+        payload = _json(url, TENCENT)
+        if payload.get("code") not in (0, None):
+            raise RuntimeError(str(payload.get("msg") or "腾讯行业资金失败"))
+        return payload
+
+    inflow, _ = parse_tencent_industry_flows(rank("down"))
+    _, outflow = parse_tencent_industry_flows(rank("up"))
+    if not inflow and not outflow:
+        raise RuntimeError("腾讯行业资金为空")
+    return inflow, outflow
+
+
 def eastmoney_breadth(day: str) -> Breadth:
-    fenbu_url = (
-        "https://push2ex.eastmoney.com/getTopicZDFenBu"
-        f"?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&date={day}"
-    )
-    fenbu = _json(fenbu_url, EASTMONEY_QUOTE)
+    path = f"/getTopicZDFenBu?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&date={day}"
+    fenbu = _first_json(tuple(host + path for host in EX_HOSTS), EASTMONEY_QUOTE, "涨跌分布")
     data = fenbu.get("data")
     items = data.get("fenbu") if isinstance(data, dict) else None
     if not isinstance(items, list) or not items:
         raise RuntimeError("涨跌分布为空")
+    quoted = str((data or {}).get("qdate") or "")
+    if day and quoted and quoted != day:
+        raise RuntimeError(f"涨跌分布日期{quoted}与{day}不一致")
 
-    def pool_count(path: str) -> int | None:
-        url = (
-            f"https://push2ex.eastmoney.com/{path}?ut=7eea3edcaed734bea9cbfc24409ed989"
+    def pool_count(pool: str) -> int | None:
+        pool_path = (
+            f"/{pool}?ut=7eea3edcaed734bea9cbfc24409ed989"
             f"&dpt=wz.ztzt&Pageindex=0&pagesize=1&sort=fbt%3Aasc&date={day}"
         )
         try:
-            payload = _json(url, EASTMONEY_QUOTE, timeout=12, retries=0)
-        except (OSError, ValueError):
+            payload = _first_json(tuple(host + pool_path for host in EX_HOSTS), EASTMONEY_QUOTE, pool)
+        except (OSError, ValueError, RuntimeError, TypeError):
             return None
-        data = payload.get("data")
-        if not isinstance(data, dict) or data.get("tc") is None:
+        pool_data = payload.get("data")
+        if not isinstance(pool_data, dict) or pool_data.get("tc") is None:
             return None
         try:
-            return int(data["tc"])
+            return int(pool_data["tc"])
         except (ValueError, TypeError, OverflowError):
             return None
 
@@ -231,7 +329,38 @@ def _first_row(payload: dict) -> dict | None:
 
 
 def _cross_row(url: str) -> dict | None:
-    return _first_row(_json(url, EASTMONEY, timeout=12, retries=0))
+    payload = _json(url, EASTMONEY)
+    if _payload_unusable(payload):
+        return None
+    return _first_row(payload)
+
+
+def _merge_cross(primary: CrossBorder | None, secondary: CrossBorder | None) -> CrossBorder | None:
+    if primary is None:
+        return secondary
+    if secondary is None:
+        return primary
+    if primary.trade_day and secondary.trade_day and primary.trade_day != secondary.trade_day:
+        return primary
+    return CrossBorder(
+        north_turnover=primary.north_turnover if primary.north_turnover is not None else secondary.north_turnover,
+        south_net=primary.south_net if primary.south_net is not None else secondary.south_net,
+        south_sh=primary.south_sh if primary.south_sh is not None else secondary.south_sh,
+        south_sz=primary.south_sz if primary.south_sz is not None else secondary.south_sz,
+        trade_day=primary.trade_day or secondary.trade_day,
+    )
+
+
+def _kamt_cross(trade_day: str) -> CrossBorder:
+    path = (
+        "/api/qt/kamt/get?fields1=f1,f2,f3,f4"
+        "&fields2=f51,f52,f53,f54,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"
+    )
+    payload = push_json(path, EASTMONEY_QUOTE)
+    parsed = parse_kamt(payload, trade_day)
+    if parsed is None:
+        raise RuntimeError("跨境实时为空")
+    return parsed
 
 
 def eastmoney_cross_border(trade_day: str = "") -> CrossBorder:
@@ -258,7 +387,13 @@ def eastmoney_cross_border(trade_day: str = "") -> CrossBorder:
         if row and (not trade_day or str(row.get("TRADE_DATE") or "")[:10] == trade_day):
             south_rows[kind] = row
     result = parse_cross_border(north, south_rows)
-    if result.north_turnover is None and result.south_net is None:
+    if result.north_turnover is None or result.south_net is None:
+        live = optional("跨境实时", lambda: _kamt_cross(trade_day))
+        if result.north_turnover is None and result.south_net is None:
+            result = live
+        else:
+            result = _merge_cross(result, live)
+    if result is None or (result.north_turnover is None and result.south_net is None):
         raise RuntimeError("跨境资金为空")
     return result
 
@@ -282,17 +417,36 @@ def sohu_turnover(trade_date: date) -> TurnoverComparison | None:
     start = (trade_date - timedelta(days=30)).strftime("%Y%m%d")
     end = trade_date.strftime("%Y%m%d")
     url = f"https://q.stock.sohu.com/hisHq?code=zs_000001&start={start}&end={end}&stat=1&order=D&period=d"
-    return parse_sohu_turnover(
-        json.loads(fetch_text(url, "https://q.stock.sohu.com/", encoding="gb18030", timeout=12, retries=0)),
-        trade_date,
-    )
+    payload = json.loads(fetch_text(
+        url, "https://q.stock.sohu.com/", encoding="gb18030", timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES,
+    ))
+    return parse_sohu_turnover(payload, trade_date)
 
 
 def eastmoney_turnover(trade_date: date) -> TurnoverComparison | None:
-    url = (
-        f"{EASTMONEY_HISTORY}/api/qt/stock/kline/get?secid=1.000001&klt=101&fqt=0&lmt=40"
+    path = (
+        "/api/qt/stock/kline/get?secid=1.000001&klt=101&fqt=0&lmt=40"
         f"&end={trade_date:%Y%m%d}&fields1=f1,f2,f3,f4,f5,f6"
         "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
     )
-    payload = _json(url, EASTMONEY, timeout=12, retries=0)
-    return parse_eastmoney_turnover(payload, trade_date)
+    parsed = parse_eastmoney_turnover(push_json(path, EASTMONEY), trade_date)
+    if parsed is None:
+        raise RuntimeError("东财成交额为空")
+    return parsed
+
+
+def tencent_turnover(trade_date: date) -> TurnoverComparison | None:
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=sh000001,day,,,40,qfq"
+    parsed = parse_tencent_turnover(_json(url, TENCENT), trade_date)
+    if parsed is None:
+        raise RuntimeError("腾讯成交额为空")
+    return parsed
+
+
+def tencent_kline(symbol: str, name: str, bars: int) -> list[Quote]:
+    count = max(5, min(int(bars), 400))
+    url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={symbol},day,,,{count},qfq"
+    quotes = parse_tencent_kline(_json(url, TENCENT), symbol, name)
+    if not quotes:
+        raise RuntimeError("腾讯日线为空")
+    return quotes
