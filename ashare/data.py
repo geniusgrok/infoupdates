@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date, datetime, time
+from datetime import date, datetime
 
 from . import sources
-from .calendar import HOLIDAY_RANGES, is_trading_day, previous_trading_day
+from .calendar import HOLIDAY_RANGES, is_trading_day, latest_quote_date, previous_trading_day
 from .models import CST, CapitalMix, MarketData, Quote, SectorFlow, SectorMove, TurnoverComparison, china_time
-from .parse import INDEX_ORDER, OVERSEAS_ORDER, combine_quotes
+from .parse import INDEX_NAMES, INDEX_ORDER, OVERSEAS_ORDER, combine_quotes
 
 TENCENT_OVERSEAS = ("道琼斯", "纳斯达克", "标普500", "恒生指数", "恒生科技")
 
@@ -22,11 +22,38 @@ def _note_for(status: str, fallback: str, missing: str) -> str | None:
     return None
 
 
+def _daily_indices(day: date, observed_at: datetime) -> list[Quote]:
+    """Completed session bars for the reference day when the live feed has already rolled."""
+    from .history import load_daily
+
+    try:
+        start = previous_trading_day(day)
+    except ValueError:
+        start = day
+    quotes: list[Quote] = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(load_daily, symbol, INDEX_NAMES[symbol], start, day, observed_at, required_day=day)
+            for symbol in sources.INDEX_SYMBOLS
+        ]
+        for future in futures:
+            try:
+                rows = future.result()
+            except (OSError, ValueError, TypeError, RuntimeError):
+                continue
+            match = next((row for row in rows if row.trade_day == day.isoformat() and row.last > 0), None)
+            if match:
+                quotes.append(match)
+    if not any(quote.name == "上证指数" for quote in quotes):
+        raise RuntimeError("指数日线没有上证")
+    return quotes
+
+
 def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
     now = china_time(now or datetime.now(CST))
     calendar_note = None
     try:
-        expected = now.date() if is_trading_day(now.date()) and now.time() >= time(9, 30) else previous_trading_day(now.date())
+        expected = latest_quote_date(now)
     except ValueError as exc:
         expected, calendar_note = None, str(exc)
 
@@ -53,6 +80,14 @@ def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
         primary = [quote for quote in primary if quote.trade_day == trade_day]
         secondary = [quote for quote in secondary if quote.trade_day == trade_day]
     merged, status = combine_quotes(primary, secondary, INDEX_ORDER, required="上证指数")
+    aligned = any(
+        quote.name == "上证指数" and quote.last > 0 and (not expected or quote.trade_day == expected.isoformat())
+        for quote in merged
+    )
+    if expected and not aligned:
+        historical = sources.optional("指数日线", lambda: _daily_indices(expected, now))
+        if historical:
+            return historical, "；".join(note for note in ("指数改用日线", calendar_note) if note)
     notes = [_note_for(status, "指数改用腾讯行情", "指数暂缺"), calendar_note]
     if merged and expected and trade_day < expected.isoformat():
         notes.append(f"指数行情仅到{trade_day}，最新行情日{expected.isoformat()}暂缺")
@@ -104,6 +139,9 @@ def load_flows() -> tuple[list[SectorFlow], list[SectorFlow], str, str | None]:
     if money:
         _, _, inflow, outflow = money
         return inflow, outflow, "新浪行业", "行业资金改用新浪"
+    tencent = sources.optional("腾讯行业资金", sources.tencent_flows)
+    if tencent:
+        return tencent[0], tencent[1], "腾讯行业", "行业资金改用腾讯"
     return [], [], "东财行业", "行业资金暂缺"
 
 
@@ -111,7 +149,10 @@ def load_capital(trade_day: str | None = None) -> tuple[list[CapitalMix], str | 
     eastmoney: list[CapitalMix] = []
     complete = True
     for secid, market in (("1.000001", "沪市"), ("0.399001", "深市")):
-        parsed = sources.optional(f"{market}东财资金", lambda secid=secid, market=market: sources.eastmoney_capital(secid, market))
+        parsed = sources.optional(
+            f"{market}东财资金",
+            lambda secid=secid, market=market: sources.eastmoney_capital(secid, market, trade_day or ""),
+        )
         if parsed and (not trade_day or parsed.trade_day == trade_day):
             eastmoney.append(parsed)
         else:
@@ -120,7 +161,10 @@ def load_capital(trade_day: str | None = None) -> tuple[list[CapitalMix], str | 
         return eastmoney, None
     tencent: list[CapitalMix] = []
     for code, market in (("sh000001", "沪市"), ("sz399001", "深市")):
-        parsed = sources.optional(f"{market}腾讯资金", lambda code=code, market=market: sources.tencent_capital(code, market))
+        parsed = sources.optional(
+            f"{market}腾讯资金",
+            lambda code=code, market=market: sources.tencent_capital(code, market, trade_day or ""),
+        )
         if parsed and (not trade_day or parsed.trade_day == trade_day):
             tencent.append(parsed)
     if len(tencent) == 2:
@@ -135,21 +179,35 @@ def load_capital(trade_day: str | None = None) -> tuple[list[CapitalMix], str | 
 
 
 def load_turnover_comparison(trade_date: date) -> TurnoverComparison | None:
-    for label, loader in (("搜狐成交额", sources.sohu_turnover), ("东财成交额", sources.eastmoney_turnover)):
+    for label, loader in (
+        ("搜狐成交额", sources.sohu_turnover),
+        ("东财成交额", sources.eastmoney_turnover),
+        ("腾讯成交额", sources.tencent_turnover),
+    ):
         comparison = sources.optional(label, lambda loader=loader: loader(trade_date))
         if comparison is not None:
             return comparison
     return None
 
 
-def load_market() -> MarketData:
-    indices, index_note = load_indices()
+def _anchor_day(hero: Quote | None, now: datetime) -> date | None:
+    if hero and hero.trade_day:
+        try:
+            return date.fromisoformat(hero.trade_day)
+        except ValueError:
+            pass
+    try:
+        return latest_quote_date(now)
+    except ValueError:
+        return None
+
+
+def load_market(now: datetime | None = None) -> MarketData:
+    now = china_time(now or datetime.now(CST))
+    indices, index_note = load_indices(now)
     notes = [index_note] if index_note else []
     hero = next((quote for quote in indices if quote.name == "上证指数"), None)
-    try:
-        trade_date = date.fromisoformat(hero.trade_day) if hero and hero.trade_day else None
-    except ValueError:
-        trade_date = None
+    trade_date = _anchor_day(hero, now)
     day = trade_date.strftime("%Y%m%d") if trade_date else ""
 
     jobs = {

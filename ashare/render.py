@@ -11,6 +11,10 @@ from .models import Brief, Quote, china_time
 from .narrative import MORNING_ABROAD, focus_items, headline, market_summary
 
 
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
 def _quotes(brief: Brief) -> dict[str, Quote]:
     quotes = {quote.name: quote for quote in brief.indices + brief.overseas
               if isfinite(quote.last) and quote.last > 0}
@@ -182,7 +186,7 @@ def _price_table(canvas: Canvas, brief: Brief) -> None:
 
 
 def _capital(canvas: Canvas, brief: Brief) -> None:
-    has_capital = any(isfinite(value) for item in brief.capital
+    has_capital = any(_number(value) for item in brief.capital
                       for value in (item.main, item.super_order, item.large, item.mid, item.small))
     has_flows = any(isfinite(flow.net) for flow in brief.sector_in + brief.sector_out)
     cross = brief.cross
@@ -208,7 +212,7 @@ def _capital(canvas: Canvas, brief: Brief) -> None:
     if brief.capital and (len(brief.capital) == 1 or brief.main_net is not None):
         for label, field in (("超大单", "super_order"), ("大单", "large"), ("中单", "mid"), ("小单", "small")):
             values = [getattr(item, field) for item in brief.capital]
-            if all(isfinite(value) for value in values):
+            if all(_number(value) for value in values):
                 orders.append((label, sum(values)))
     scale = max((abs(value) for _, value in orders), default=0)
     for i, (label, value) in enumerate(orders):
