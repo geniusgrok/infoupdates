@@ -30,6 +30,26 @@ def restore(model, value):
     return value
 
 
+def _separate_capture_time(data, reference: datetime):
+    """回放时钟被拨回版面日结束时，丢掉晚于该时刻的采集戳，保留不晚于目标的成交时间。"""
+
+    def fix(quote):
+        if quote.asof is None or quote.asof > reference:
+            return quote
+        if quote.observed_at is not None and quote.observed_at > reference:
+            return replace(quote, observed_at=None)
+        return quote
+
+    return replace(
+        data,
+        quotes={key: fix(quote) for key, quote in data.quotes.items()},
+        premarket={key: fix(quote) for key, quote in data.premarket.items()},
+        postmarket={key: fix(quote) for key, quote in data.postmarket.items()},
+        completed={key: fix(quote) for key, quote in data.completed.items()},
+        overnight={key: fix(quote) for key, quote in data.overnight.items()},
+    )
+
+
 def dated_brief(archive: Archive, market: str, kind: str, day: date, now: datetime):
     if market == "ashare":
         from ashare.compose import build_brief
@@ -79,6 +99,8 @@ def dated_brief(archive: Archive, market: str, kind: str, day: date, now: dateti
                                notes=notes)
             else:
                 data = replace(data, notes=notes)
+                # 采集时间可以晚于回放日；行情时点仍必须不晚于该日。只在这条恢复路径分开两者。
+                data = _separate_capture_time(data, reference)
             data.news = [item for item in data.news if item.published.tzinfo is not None and item.published <= end]
         brief = build_brief(kind, data, now=reference)
         if eligible(brief):

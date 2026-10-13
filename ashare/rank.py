@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, time, timedelta
 
+from common.news import news_key
+
 from .calendar import previous_trading_day
 from .models import CST, NewsItem, china_time
 
@@ -66,18 +68,25 @@ def score_news(item: NewsItem, *, kind: str, trade_date: date) -> float:
     return score
 
 
-def _compact(title: str) -> str:
-    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", title).lower()
+_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?%?")
 
 
-def _duplicate(left: str, right: str) -> bool:
-    a, b = _compact(left), _compact(right)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    short, long = (a, b) if len(a) <= len(b) else (b, a)
-    return len(short) >= 10 and short in long
+def _numbers(title: str) -> tuple[str, ...]:
+    return tuple(_NUMBER.findall(title))
+
+
+def _relation(kept: NewsItem, candidate: NewsItem) -> str:
+    """相同数字和符号才算同一事实。旧标题是新标题的前缀时，不丢掉较新的一条。"""
+    left, right = news_key(kept.title), news_key(candidate.title)
+    if not left or not right or _numbers(kept.title) != _numbers(candidate.title):
+        return ""
+    if left == right:
+        return "same"
+    if len(left) >= 10 and left in right and candidate.published >= kept.published:
+        return "older-prefix"
+    if len(right) >= 10 and right in left:
+        return "same"
+    return ""
 
 
 def select_news(
@@ -121,6 +130,8 @@ def select_news(
             title=title,
             source=item.source,
             source_score=item.source_score,
+            url=item.url,
+            external_id=item.external_id,
         )
         scored.rank = score_news(scored, kind=kind, trade_date=trade_date)
         pool.append(scored)
@@ -128,14 +139,21 @@ def select_news(
     preferred = [item for item in pool if item.rank >= 16]
     ranked = preferred or [item for item in pool if item.rank >= 0]
     chosen: list[NewsItem] = []
-    fed_count = 0
     for item in ranked:
-        if any(_duplicate(item.title, kept.title) for kept in chosen):
+        skip = False
+        for index, kept in enumerate(chosen):
+            relation = _relation(kept, item)
+            if relation == "older-prefix":
+                chosen[index] = item
+                skip = True
+                break
+            if relation == "same":
+                skip = True
+                break
+        if skip:
             continue
-        if "美联储" in item.title:
-            if fed_count >= 2:
-                continue
-            fed_count += 1
+        if "美联储" in item.title and sum("美联储" in kept.title for kept in chosen) >= 2:
+            continue
         chosen.append(item)
         if len(chosen) >= limit:
             break

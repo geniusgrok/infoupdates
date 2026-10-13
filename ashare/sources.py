@@ -211,7 +211,7 @@ def sina_sectors() -> tuple[list[SectorMove], list[SectorMove]]:
 
 def sina_sector_money() -> tuple[list[SectorMove], list[SectorMove], list[SectorFlow], list[SectorFlow]]:
     url = (
-        "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
         "MoneyFlow.ssl_bkzj_bk?page=1&num=80&sort=netamount&asc=0&fenlei=0"
     )
     text = fetch_text(url, SINA, encoding="utf-8", timeout=QUOTE_TIMEOUT, retries=QUOTE_RETRIES)

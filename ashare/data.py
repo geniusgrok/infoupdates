@@ -7,6 +7,7 @@ from datetime import date, datetime
 from . import sources
 from .calendar import HOLIDAY_RANGES, is_trading_day, latest_quote_date, previous_trading_day
 from .models import CST, CapitalMix, MarketData, Quote, SectorFlow, SectorMove, TurnoverComparison, china_time
+from .overseas import align_overseas
 from .parse import INDEX_NAMES, INDEX_ORDER, OVERSEAS_ORDER, combine_quotes
 
 TENCENT_OVERSEAS = ("道琼斯", "纳斯达克", "标普500", "恒生指数", "恒生科技")
@@ -94,11 +95,13 @@ def load_indices(now: datetime | None = None) -> tuple[list[Quote], str | None]:
     return merged, "；".join(note for note in notes if note) or None
 
 
-def load_overseas() -> tuple[list[Quote], list[Quote], str | None]:
+def load_overseas(now: datetime | None = None) -> tuple[list[Quote], list[Quote], str | None]:
+    now = china_time(now or datetime.now(CST))
     primary = sources.optional("新浪外盘", sources.sina_overseas)
     overseas, fx = primary if primary else ([], [])
     overseas = [replace(quote, source="新浪") for quote in overseas]
     fx = [replace(quote, source="新浪") for quote in fx]
+    overseas, dropped = align_overseas(overseas, now)
     tencent_overseas: list[Quote] = []
     tencent_fx: list[Quote] = []
     have = {quote.name for quote in overseas}
@@ -109,13 +112,20 @@ def load_overseas() -> tuple[list[Quote], list[Quote], str | None]:
             tencent_overseas, tencent_fx = found
             tencent_overseas = [replace(quote, source="腾讯") for quote in tencent_overseas]
             tencent_fx = [replace(quote, source="腾讯") for quote in tencent_fx]
+            tencent_overseas, tencent_dropped = align_overseas(tencent_overseas, now)
+            dropped = list(dict.fromkeys([*dropped, *tencent_dropped]))
     merged, status = combine_quotes(overseas, tencent_overseas, OVERSEAS_ORDER)
+    kept_names = {quote.name for quote in merged}
     fx_merged, fx_status = combine_quotes(fx, tencent_fx, ("在岸人民币", "离岸人民币"))
     note = _note_for(status, "外盘改用腾讯行情", "")
     if fx_status == "fallback" and not note:
         note = "汇率改用腾讯行情"
+    skipped = [name for name in dropped if name not in kept_names]
+    if skipped:
+        extra = "外盘日期与各市场最近收盘不一致，已跳过：" + "、".join(skipped)
+        note = f"{note}；{extra}" if note else extra
     if not merged and not fx_merged:
-        note = "外盘暂缺"
+        note = "外盘暂缺" if not note else f"{note}；外盘暂缺"
     return merged, fx_merged, note or None
 
 
@@ -211,7 +221,7 @@ def load_market(now: datetime | None = None) -> MarketData:
     day = trade_date.strftime("%Y%m%d") if trade_date else ""
 
     jobs = {
-        "overseas": load_overseas,
+        "overseas": lambda: load_overseas(now),
         "sectors": load_sectors,
         "flows": load_flows,
         "capital": lambda: load_capital(trade_date.isoformat()) if trade_date else ([], "主力资金暂缺"),

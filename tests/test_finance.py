@@ -35,8 +35,9 @@ class FinanceTests(unittest.TestCase):
         brief = a_brief('close', data, now)
         self.assertEqual(a_headline(brief), '指数回落，上涨家数更多')
         self.assertIn('主要指数企稳', a_focus(brief)[1].title)
-        data.overseas = [AQuote('gb_dji', '道琼斯', 40000, -.5), AQuote('gb_ixic', '纳斯达克', 20000, .8),
-                         AQuote('gb_inx', '标普500', 5000, .2)]
+        data.overseas = [AQuote('gb_dji', '道琼斯', 40000, -.5, trade_day='2026-09-29', session='09-29 收盘'),
+                         AQuote('gb_ixic', '纳斯达克', 20000, .8, trade_day='2026-09-29', session='09-29 收盘'),
+                         AQuote('gb_inx', '标普500', 5000, .2, trade_day='2026-09-29', session='09-29 收盘')]
         brief = a_brief('morning', data, now)
         self.assertEqual(a_headline(brief), '纳指上涨，道指回落')
         self.assertIn('A股成长板块', a_focus(brief)[1].title)

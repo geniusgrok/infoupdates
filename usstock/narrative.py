@@ -62,7 +62,10 @@ def select_news(
             if not re.search(r'(?<![A-Za-z0-9])(?:AAPL|MSFT|NVDA|AMZN|GOOGL|META|TSLA)(?![A-Za-z0-9])', title, re.I):
                 continue
         rank = item.source_score * 10 + sum(weight for word, weight in BOOSTS if word.lower() in title.lower())
-        scored = NewsItem(published=published, title=title, source=item.source, source_score=item.source_score, rank=rank)
+        scored = NewsItem(
+            published=published, title=title, source=item.source, source_score=item.source_score, rank=rank,
+            url=item.url, external_id=item.external_id,
+        )
         key = news_key(title)
         previous = selected.get(key)
         priority = (published.timestamp(), rank) if kind == "premarket" else (rank, published.timestamp())

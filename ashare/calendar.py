@@ -43,6 +43,17 @@ def edition_date(kind: str, now: datetime, trade_date: date) -> date:
     return next_trading_day(now.date())
 
 
+def coverage_note(day: date) -> str:
+    """下一年休市通常在11–12月才公布；年末前提醒，不编造尚未公告的日期。"""
+    following = day.year + 1
+    if day.month >= 11 and day.year in HOLIDAY_RANGES and following not in HOLIDAY_RANGES:
+        return (
+            f"A股交易日历尚未覆盖{following}年；上交所通常在11–12月公布下一年休市，"
+            "请在年末按交易所公告更新，否则跨年后无法生成"
+        )
+    return ""
+
+
 def latest_quote_date(now: datetime) -> date:
     """运行前预计的行情日期；生成版面仍以实际报价日期为准。"""
     if is_trading_day(now.date()) and now.time() >= time(9, 30):

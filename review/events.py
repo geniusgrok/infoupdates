@@ -142,6 +142,10 @@ def track_events(archive: Archive, news: list, events: list, now: datetime) -> N
                 record_metric(archive, event["id"], kind, numbers | data, published, now)
 
 
+def _latest_recorded(rows: list[dict]) -> dict:
+    return max(rows, key=lambda value: (value["recorded_at"], value["id"]))
+
+
 def comparisons(event: dict) -> list[str]:
     """仅比较同指标、同月份、同单位且发布前已留存的预期。"""
     results = [item for item in event["evidence"] if item["kind"] == "result"]
@@ -156,9 +160,9 @@ def comparisons(event: dict) -> list[str]:
         verified = [value for value in results if value["data"].get("verified") and tuple(value["data"][field] for field in ("metric", "period", "unit")) == key]
         official = [value for value in results if value["data"].get("official") and tuple(value["data"][field] for field in ("metric", "period", "unit")) == key]
         if verified:
-            item = verified[-1]
+            item = _latest_recorded(verified)
         elif official:
-            item = official[-1]
+            item = _latest_recorded(official)
         data = item["data"]
         values = sorted({value["value"] for value in same})
         if len(values) > 1 and not (verified or official):
@@ -168,9 +172,10 @@ def comparisons(event: dict) -> list[str]:
         matched = [value for value in forecasts if tuple(value["data"][field] for field in ("metric", "period", "unit")) == key]
         line = f"{data['period']} {data['metric']}：{data['value']:g}{data['unit']}"
         if matched:
-            expected = matched[-1]["data"]["value"]
+            forecast = max(matched, key=lambda value: (value["published_at"], value["recorded_at"], value["id"]))
+            expected = forecast["data"]["value"]
             direction = "高于" if data["value"] > expected else "低于" if data["value"] < expected else "等于"
-            line += f"，{direction}已留存预期 {expected:g}{data['unit']}（{matched[-1]['data']['source']}）"
+            line += f"，{direction}已留存预期 {expected:g}{data['unit']}（{forecast['data']['source']}）"
         elif data.get("previous") is not None:
             label = "同版前期值" if data.get("official") else "报道所列前值"
             line += f"，{label} {data['previous']:g}{data['unit']}"

@@ -87,10 +87,14 @@ def _current(quote: Quote, bag: str, now: datetime) -> bool:
         )
     if bag == "overnight":
         start, end = overnight_window(edition_date("premarket", now))
-        return (
-            quote.session == bag and start.timestamp() <= stamp.timestamp() <= now.timestamp() < end.timestamp()
-            and now.timestamp() - stamp.timestamp() <= TTL[bag]
-        )
+        if quote.session != bag or not start.timestamp() <= stamp.timestamp() < end.timestamp():
+            return False
+        if now.timestamp() < stamp.timestamp() or now.timestamp() - stamp.timestamp() > TTL[bag]:
+            return False
+        # 无成交时间的快照到 04:00 失效；窗口内的真实夜盘成交在 TTL 内仍可用。
+        if quote.is_snapshot and not start.timestamp() <= now.timestamp() < end.timestamp():
+            return False
+        return True
     if quote.session == "regular":
         return day == latest or (day == now.date() and is_trading_day(day) and now < session_close(day))
     return quote.session in {"futures", "reference"}

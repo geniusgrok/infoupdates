@@ -70,23 +70,28 @@ jobs:
             test -f archive/market.sqlite3
           fi
       - name: Generate selected editions
+        id: generate
         env:
           BRIEF_REQUEST: ${{ inputs.edition }}
           BRIEF_FORCE: ${{ inputs.force }}
           BRIEF_DATE: ${{ inputs.date }}
           BRIEF_WATERMARK: ${{ inputs.watermark }}
+          BRIEF_SCHEDULE: ${{ github.event.schedule }}
         run: |
           python - <<'PY'
           import os
           from datetime import date, datetime, timedelta, timezone
           from ashare.__main__ import main as ashare
-          from ashare.calendar import is_trading_day as a_trading
-          from ashare.models import CST
           from usstock.__main__ import main as usstock
-          from usstock.calendar import is_trading_day as u_trading
-          from usstock.models import NY
           from weekly.__main__ import main as weekly
           from review.__main__ import main as review
+          from common.schedule import scheduled_jobs
+
+          def set_output(name, value):
+              path = os.environ.get('GITHUB_OUTPUT')
+              if path:
+                  with open(path, 'a', encoding='utf-8') as handle:
+                      handle.write(f'{name}={value}\n')
 
           request = os.environ.get('BRIEF_REQUEST', '')
           force = ['--force'] if os.environ.get('BRIEF_FORCE') == 'true' else []
@@ -96,7 +101,6 @@ jobs:
               raise ValueError('date must use YYYY-MM-DD')
           day = ['--date', selected_date] if selected_date else []
           now = datetime.now(timezone.utc)
-          cn, us = now.astimezone(CST), now.astimezone(NY)
           jobs = []
           editions = {
               'ashare': (ashare, 'all'),
@@ -117,17 +121,19 @@ jobs:
                   selected = date.fromisoformat(selected_date)
                   week = ['--week', (selected - timedelta(days=selected.weekday())).isoformat()]
               jobs = [(weekly, ['--backfill', *week, *force, *watermark])]
+          reasons = []
           if not request:
-              if a_trading(cn.date()) and cn.hour == 8:
-                  jobs.append((ashare, ['morning']))
-              if a_trading(cn.date()) and cn.hour == 15:
-                  jobs.append((ashare, ['close']))
-              if u_trading(us.date()) and us.hour == 8:
-                  jobs.append((usstock, ['premarket']))
-              if u_trading(us.date()) and us.hour == 16:
-                  jobs.append((usstock, ['postmarket']))
-              if cn.weekday() == 5 and cn.hour == 10:
-                  jobs.append((weekly, ['--backfill', *force]))
+              planned, reasons = scheduled_jobs(now, os.environ.get('BRIEF_SCHEDULE', ''))
+              commands = {'ashare': ashare, 'usstock': usstock, 'weekly': weekly}
+              jobs = [(commands[market], arguments) for market, arguments in planned]
+          if jobs:
+              set_output('upload_archive', 'true')
+          else:
+              set_output('upload_archive', 'false')
+          for reason in reasons:
+              print(reason, flush=True)
+          if not jobs:
+              print('本次没有需要生成的版面，不重写历史页，也不重新上传归档。', flush=True)
           failed = False
           for module, arguments in jobs:
               try:
@@ -136,7 +142,8 @@ jobs:
                   if exc.code:
                       failed = True
                       print(f'{module.__module__} failed: {exc.code}', flush=True)
-          review(['history'])
+          if jobs:
+              review(['history'])
           if failed:
               raise SystemExit(1)
           PY
@@ -151,7 +158,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
       - name: Save complete archive, including partial-run data
-        if: ${{ always() && steps.restore.outcome == 'success' }}
+        if: ${{ always() && steps.restore.outcome == 'success' && steps.generate.outputs.upload_archive != 'false' }}
         uses: actions/upload-artifact@v7
         with:
           name: market-archive

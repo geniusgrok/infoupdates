@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from math import isfinite
 
-from .calendar import HOLIDAY_RANGES, edition_date, is_trading_day, latest_quote_date, previous_trading_day
+from .calendar import HOLIDAY_RANGES, coverage_note, edition_date, is_trading_day, latest_quote_date, previous_trading_day
 from .models import CST, Brief, MarketData, Narrative, Quote, china_time
+from .overseas import align_overseas
 from .narrative import build_narrative
 from .rank import select_news
 
@@ -71,6 +72,12 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
     if cross and cross.trade_day and cross.trade_day != trade_date.isoformat():
         cross = None
         notes.append("跨境资金日期不一致，已跳过旧数据")
+    overseas, dropped = align_overseas(data.overseas, now)
+    if dropped:
+        notes.append("外盘日期与各市场最近收盘不一致，已跳过：" + "、".join(dropped))
+    horizon = coverage_note(now.date())
+    if horizon:
+        notes.append(horizon)
     known_calendar = now.year in HOLIDAY_RANGES
     if not known_calendar:
         notes.append(f"交易日历尚未覆盖{now.year}年，量能比较待确认")
@@ -92,7 +99,7 @@ def build_brief(kind: str, data: MarketData, now: datetime | None = None) -> Bri
         sector_out=data.sector_out,
         breadth=data.breadth,
         cross=cross,
-        overseas=data.overseas,
+        overseas=overseas,
         fx=data.fx,
         news=news,
         narrative=Narrative(style="", sentiment="", summary="", watch=[]),

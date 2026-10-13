@@ -21,6 +21,8 @@ class NewsItem:
     source: str
     source_score: float = 1
     rank: float = 0
+    url: str = ""
+    external_id: str = ""
 
 
 def news_key(title: str) -> str:
@@ -95,12 +97,15 @@ def wscn_items(channel: str, pages: int = 3) -> list[NewsItem]:
                 published = datetime.fromtimestamp(float(raw["display_time"]), CST)
             except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 continue
+            link = raw.get("uri") or raw.get("global_uri") or ""
             items.append(
                 NewsItem(
                     published=published,
                     title=title,
                     source="见闻",
                     source_score=_score(raw.get("score") or 1),
+                    url=link if isinstance(link, str) and link.startswith("https://") else "",
+                    external_id=str(raw.get("id") or ""),
                 )
             )
         cursor = str(data.get("next_cursor") or "")
@@ -131,5 +136,10 @@ def em_items(column: str) -> list[NewsItem]:
             continue
         if score <= 0:
             score = 1.4
-        items.append(NewsItem(published=published, title=title, source="东财", source_score=score))
+        link = raw.get("url") or raw.get("uniqueUrl") or ""
+        items.append(NewsItem(
+            published=published, title=title, source="东财", source_score=score,
+            url=link if isinstance(link, str) and link.startswith("https://") else "",
+            external_id=str(raw.get("code") or raw.get("newsId") or ""),
+        ))
     return items
