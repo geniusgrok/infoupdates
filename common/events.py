@@ -90,14 +90,18 @@ def fomc_events(calendar: str, now: datetime, *, days: int = 3) -> list[Calendar
 
 def load_events(now: datetime, *, days: int = 3) -> list[CalendarEvent]:
     def load(source):
-        url, referer, parse = source
+        url, referer, parse, label = source
         try:
-            return parse(fetch_text(url, referer, timeout=4, retries=0), now, days=days)
-        except (OSError, TimeoutError, ValueError):
+            text = fetch_text(url, referer, timeout=4, retries=0)
+            found = parse(text, now, days=days)
+        except (OSError, TimeoutError, ValueError) as exc:
+            print(f"[warn] {label}日历不可达：{type(exc).__name__}", flush=True)
             return []
+        print(f"[info] {label}日历：未来{days}天内 {len(found)} 条", flush=True)
+        return found
 
-    sources = ((BLS_URL, "https://www.bls.gov/schedule/", upcoming_events),
-               (FED_URL, "https://www.federalreserve.gov/newsevents/calendar.htm", fomc_events))
+    sources = ((BLS_URL, "https://www.bls.gov/schedule/", upcoming_events, "BLS"),
+               (FED_URL, "https://www.federalreserve.gov/newsevents/calendar.htm", fomc_events, "美联储"))
     # 两个官方日历独立请求，一方失败仍保留另一方已确认的日程。
     with ThreadPoolExecutor(max_workers=2) as pool:
         events = [event for batch in pool.map(load, sources) for event in batch]

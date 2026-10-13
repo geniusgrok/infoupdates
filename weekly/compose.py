@@ -158,7 +158,10 @@ def build_weekly(archive: Archive, now: datetime, *, week: date | None = None) -
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=CST)
             if start <= stamp.astimezone(NY).date() <= end and stamp <= now:
-                news.append(NewsItem(stamp, item["title"], item["source"], item.get("source_score", 1), item.get("rank", 0)))
+                news.append(NewsItem(
+                    stamp, item["title"], item["source"], item.get("source_score", 1), item.get("rank", 0),
+                    item.get("url") or "", item.get("external_id") or "",
+                ))
     focus = build_focus(news, now, market="ashare")[0]
     story = {"title": focus.title if news else "本周重点消息尚未留存", "stamp": focus.stamp}
     completed = [event for event in archive.events(through=now) if start <= datetime.fromisoformat(event["at"]).astimezone(NY).date() <= end

@@ -40,6 +40,7 @@ class Quote:
     session: str = ""
     trade_day: str = ""
     source: str = ""
+    quote_time: str = ""
 
 
 @dataclass

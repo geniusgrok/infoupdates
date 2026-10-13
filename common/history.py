@@ -39,7 +39,13 @@ def build_history(archive: Archive) -> Path:
             if data.get("intraday") and row["session"] == "close":
                 label = "A股盘中快照"
             folder = archive.root / row["path"]
-            text = (folder / "summary.txt").read_text(encoding="utf-8")
+            summary = folder / "summary.txt"
+            try:
+                text = summary.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                print(f"[warn] 历史记录缺少文字版，已跳过正文：{row['path']}", flush=True)
+                text = "文字版缺失。图片和完整数据若仍在，可从链接打开；这条记录不中断其余历史。"
+                label += " · 文字版缺失"
             search = escape(label + " " + text, quote=True)
             path = escape(row["path"], quote=True)
             cards.append(f'''<article class="report" data-date="{row['edition_date']}" data-market="{row['market']}"

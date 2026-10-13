@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from math import isfinite
 
 from common.format import million_to_ccy
@@ -106,6 +106,50 @@ def parse_cn_index(symbol: str, body: str) -> Quote | None:
     )
 
 
+_US_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+def _standalone_year(parts: list[str]) -> int | None:
+    """Year lives in its own field. The earlier ISO clock is Beijing time, not the US session."""
+    years = []
+    for part in parts:
+        if re.fullmatch(r"\d{4}", part.strip()):
+            year = int(part)
+            if 1990 <= year <= 2100:
+                years.append(year)
+    return years[0] if len(set(years)) == 1 else None
+
+
+def _parse_us_close(parts: list[str]) -> tuple[str, str, str]:
+    """Return market date, display label, and aware close time from the EDT/EST field."""
+    raw = next((part for part in parts if "EDT" in part or "EST" in part), "")
+    match = re.search(
+        r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(AM|PM)\s*(EDT|EST)",
+        raw,
+    )
+    if not match or match.group(1) not in _US_MONTHS:
+        return "", "美股收盘", ""
+    month = _US_MONTHS[match.group(1)]
+    day = int(match.group(2))
+    hour = int(match.group(3)) % 12
+    if match.group(5) == "PM":
+        hour += 12
+    minute = int(match.group(4))
+    label = f"{month:02d}-{day:02d} 收盘"
+    year = _standalone_year(parts)
+    if year is None:
+        return "", label, ""
+    offset = -4 if match.group(6) == "EDT" else -5
+    try:
+        moment = datetime(year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=offset)))
+    except ValueError:
+        return "", "美股收盘", ""
+    return moment.date().isoformat(), label, moment.isoformat()
+
+
 def parse_us_index(symbol: str, body: str, name: str) -> Quote | None:
     if not body:
         return None
@@ -117,32 +161,11 @@ def parse_us_index(symbol: str, body: str, name: str) -> Quote | None:
     change = _optional_float(parts[4])
     if last is None or last <= 0:
         return None
-    session = next((part for part in parts if "EDT" in part or "EST" in part), parts[3])
-    session = _short_us_session(session)
-    return Quote(symbol=symbol, name=name, last=last, pct=pct, change=change, session=session)
-
-
-def _short_us_session(raw: str) -> str:
-    match = re.search(r"([A-Z][a-z]{2})\s+(\d{1,2})", raw)
-    if not match:
-        return "美股收盘"
-    month = {
-        "Jan": "01",
-        "Feb": "02",
-        "Mar": "03",
-        "Apr": "04",
-        "May": "05",
-        "Jun": "06",
-        "Jul": "07",
-        "Aug": "08",
-        "Sep": "09",
-        "Oct": "10",
-        "Nov": "11",
-        "Dec": "12",
-    }.get(match.group(1), "")
-    if not month:
-        return "美股收盘"
-    return f"{month}-{int(match.group(2)):02d} 收盘"
+    trade_day, session, quote_time = _parse_us_close(parts)
+    return Quote(
+        symbol=symbol, name=name, last=last, pct=pct, change=change,
+        session=session, trade_day=trade_day, quote_time=quote_time,
+    )
 
 
 def parse_hk_index(symbol: str, body: str, name: str) -> Quote | None:
@@ -155,9 +178,11 @@ def parse_hk_index(symbol: str, body: str, name: str) -> Quote | None:
     if last is None or last <= 0:
         return None
     session = ""
+    trade_day = ""
     for part in parts:
         if re.fullmatch(r"\d{4}/\d{2}/\d{2}", part):
-            session = part[5:].replace("/", "-")
+            trade_day = _date_stamp(part.replace("/", "-"))
+            session = part[5:].replace("/", "-") if trade_day else ""
         elif session and re.fullmatch(r"\d{2}:\d{2}:\d{2}", part):
             session = f"{session} {part[:5]}"
             break
@@ -172,6 +197,7 @@ def parse_hk_index(symbol: str, body: str, name: str) -> Quote | None:
         low=low,
         prev_close=prev,
         session=session,
+        trade_day=trade_day,
     )
 
 
@@ -185,11 +211,16 @@ def parse_nikkei(symbol: str, body: str, name: str = "日经225") -> Quote | Non
     if last is None or last <= 0:
         return None
     session = ""
+    trade_day = ""
     for part in parts:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
-            session = part[5:]
+            trade_day = _date_stamp(part)
+            session = part[5:] if trade_day else ""
             break
-    return Quote(symbol=symbol, name=name, last=last, pct=pct, change=change, session=session)
+    return Quote(
+        symbol=symbol, name=name, last=last, pct=pct, change=change,
+        session=session, trade_day=trade_day,
+    )
 
 
 def parse_fx(symbol: str, body: str, name: str) -> Quote | None:

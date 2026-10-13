@@ -126,11 +126,6 @@ class Canvas:
     def line(self, x: float, y: float, right: float, bottom: float | None = None, color=HAIR, width: int = 1) -> None:
         self.draw.line((x, y, right, y if bottom is None else bottom), fill=color, width=width)
 
-    def heading(self, x: float, y: float, label: str) -> None:
-        for i, height in enumerate((14, 23, 32)):
-            self.draw.rounded_rectangle((x + i * 12, y + 32 - height, x + i * 12 + 8, y + 32), radius=1, fill=AMBER)
-        self.text(x + 50, y - 1, label, 36, TEXT, "bold")
-
     def save(self, path: Path) -> None:
         self.image = _watermark(self.image, self.watermark)
         self.draw = ImageDraw.Draw(self.image)

@@ -16,13 +16,21 @@ def _priced(quote: dict) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value > 0
 
 
+def _morning_core(data: dict) -> list[dict]:
+    from ashare.overseas import CORE_NAMES, session_matches
+
+    generated = datetime.fromisoformat(data["generated_at"])
+    return [quote for quote in data["overseas"]
+            if quote["name"] in CORE_NAMES and _priced(quote)
+            and session_matches(quote["name"], quote.get("trade_day") or "", quote.get("session") or "", generated)]
+
+
 def publication_issue(market: str, data: dict) -> str:
     """对组装后的版面设最低门槛；次要字段缺失不阻止发布。"""
     if market == "ashare":
         if data["kind"] == "morning":
-            core = [quote for quote in data["overseas"]
-                    if quote["name"] in {"道琼斯", "纳斯达克", "标普500", "日经225"}]
-            label, needed = "A股早盘", "美股三大指数或日经指数"
+            core = _morning_core(data)
+            label, needed = "A股早盘", "最近完成的美股三大指数或日经指数"
         else:
             core = [quote for quote in data["indices"]
                     if quote["name"] in {"上证指数", "深证成指", "创业板指", "科创50"}

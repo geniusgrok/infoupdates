@@ -37,7 +37,7 @@ def social_copy(brief: Brief) -> str:
     limits = _limits(brief)
     if limits:
         lines.append(limits)
-    lines.extend(note for note in brief.notes if note.startswith(("历史", "实际采集")))
+    lines.extend(note for note in brief.notes if note.startswith(("历史", "实际采集", "A股交易日历", "外盘日期")))
     lines.append("公开行情可能延迟，不构成投资建议。")
     return "\n".join(lines) + "\n"
 
